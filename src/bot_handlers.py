@@ -2,7 +2,9 @@
 Telegram bot handlers for VPN management.
 """
 
+import base64
 import io
+import json
 import logging
 import os
 import re
@@ -90,15 +92,15 @@ def validate_client_name(name: str) -> tuple[bool, str]:
     return True, ""
 
 
-def generate_qr_code(config: str) -> bytes:
-    """Generate QR code image from config string."""
+def generate_qr_code(data: str) -> bytes:
+    """Generate QR code image from data string."""
     qr = qrcode.QRCode(
         version=1,
         error_correction=qrcode.constants.ERROR_CORRECT_L,
         box_size=10,
         border=4,
     )
-    qr.add_data(config)
+    qr.add_data(data)
     qr.make(fit=True)
 
     img = qr.make_image(fill_color="black", back_color="white")
@@ -107,6 +109,61 @@ def generate_qr_code(config: str) -> bytes:
     img.save(buf, format='PNG')
     buf.seek(0)
     return buf.getvalue()
+
+
+def generate_amnezia_qr_data(
+    client_private_key: str,
+    client_address: str,
+    server_public_key: str,
+    endpoint: str,
+    dns: str,
+    awg_params: dict
+) -> str:
+    """
+    Generate AmneziaVPN-compatible QR code data.
+    Format: vpn://base64(json)
+    """
+    # AmneziaVPN expects this JSON structure
+    config = {
+        "containers": [
+            {
+                "awg": {
+                    "H1": str(awg_params.get("H1", 1)),
+                    "H2": str(awg_params.get("H2", 2)),
+                    "H3": str(awg_params.get("H3", 3)),
+                    "H4": str(awg_params.get("H4", 4)),
+                    "Jc": str(awg_params.get("Jc", 4)),
+                    "Jmax": str(awg_params.get("Jmax", 70)),
+                    "Jmin": str(awg_params.get("Jmin", 40)),
+                    "S1": str(awg_params.get("S1", 0)),
+                    "S2": str(awg_params.get("S2", 0)),
+                    "last_config": f"""[Interface]
+Address = {client_address}
+DNS = {dns}
+PrivateKey = {client_private_key}
+
+[Peer]
+AllowedIPs = 0.0.0.0/0, ::/0
+Endpoint = {endpoint}
+PersistentKeepalive = 25
+PublicKey = {server_public_key}"""
+                },
+                "container": "amnezia-awg"
+            }
+        ],
+        "defaultContainer": "amnezia-awg",
+        "description": "AmneziaVPN",
+        "dns1": dns,
+        "dns2": "",
+        "hostName": endpoint.split(":")[0],
+        "port": int(endpoint.split(":")[1]) if ":" in endpoint else 51820
+    }
+
+    # Encode to base64
+    json_str = json.dumps(config, separators=(',', ':'))
+    b64_data = base64.b64encode(json_str.encode()).decode()
+
+    return f"vpn://{b64_data}"
 
 
 # Store references to shared objects (set from main.py)
@@ -202,8 +259,17 @@ async def cmd_create(message: Message) -> None:
             client_address=client_ip
         )
 
-        # Generate QR code
-        qr_image = generate_qr_code(config)
+        # Generate AmneziaVPN-compatible QR code
+        endpoint = f"{_vpn.vpn_host}:{_vpn.vpn_port}"
+        qr_data = generate_amnezia_qr_data(
+            client_private_key=keypair.private_key,
+            client_address=client_ip,
+            server_public_key=_vpn.server_public_key,
+            endpoint=endpoint,
+            dns=_vpn.dns,
+            awg_params=_vpn.awg_params
+        )
+        qr_image = generate_qr_code(qr_data)
 
         # Delete status message
         await status_msg.delete()
