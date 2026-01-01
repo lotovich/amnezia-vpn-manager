@@ -300,6 +300,25 @@ class Database:
 
         return result
 
+    async def get_client_total_traffic(self, client_id: int) -> tuple[int, int]:
+        """
+        Get total traffic for a single client.
+        Returns (total_received, total_sent).
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            async with db.execute(
+                """
+                SELECT 
+                    COALESCE(SUM(bytes_received), 0),
+                    COALESCE(SUM(bytes_sent), 0)
+                FROM traffic_history
+                WHERE client_id = ?
+                """,
+                (client_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return row[0], row[1]
+
     async def delete_client(self, name: str) -> bool:
         """Delete a client completely (hard delete)."""
         async with aiosqlite.connect(self.db_path) as db:

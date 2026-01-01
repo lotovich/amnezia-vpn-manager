@@ -32,7 +32,8 @@ from database import Database
 from vpn_manager import VPNManager
 from stats_viz import (
     generate_traffic_chart, generate_stats_summary,
-    generate_series_chart, generate_hourly_chart, generate_weekly_chart
+    generate_series_chart, generate_hourly_chart, generate_weekly_chart,
+    format_size
 )
 
 
@@ -608,10 +609,19 @@ async def process_stats_selection(callback: CallbackQuery):
         except Exception as e:
              logger.error(f"Failed to get handshake: {e}")
              
+        # Get total traffic
+        total_rx, total_tx = await _db.get_client_total_traffic(client.id)
+        
+        # Format creation date
+        created_at_str = client.created_at.strftime("%Y-%m-%d %H:%M")
+
         text = (
             f"👤 **Client**: `{client.name}`\n"
             f"📡 **IP**: `{client.address}`\n"
-            f"⏱ **Last Seen**: `{last_seen}`\n\n"
+            f"📅 **Created At**: `{created_at_str}`\n"
+            f"⏱ **Last Seen**: `{last_seen}`\n"
+            f"📥 **Total Downloaded**: `{format_size(total_rx)}`\n"
+            f"📤 **Total Uploaded**: `{format_size(total_tx)}`\n\n"
             "Select report type:"
         )
 
