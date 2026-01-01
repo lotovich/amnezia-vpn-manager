@@ -36,9 +36,6 @@ from stats_viz import (
 )
 
 
-class VPNStates(StatesGroup):
-    """FSM states for interactive dialogs."""
-    waiting_for_client_name = State()
 
 
 logger = logging.getLogger(__name__)
@@ -345,48 +342,7 @@ async def start_create_client(message: Message, state: FSMContext) -> None:
     await state.set_state(VPNStates.waiting_for_client_name)
 
 
-@router.message(F.text == "🗑 Delete Client")
-@router.message(Command("delete"))
-@admin_only
-async def cmd_delete(message: Message) -> None:
-    """Show client deletion menu."""
-    clients = await _db.get_all_clients()
-    if not clients:
-        await message.answer("ℹ️ No clients to delete.")
-        return
 
-    # Create inline keyboard with clients
-    keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text=f"❌ {c.name}", callback_data=f"del:{c.name}")]
-        for c in clients
-    ])
-    await message.answer("🗑 **Select client to delete:**\nWarning: This action cannot be undone!", reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
-
-
-@router.message(F.text == "📋 List Clients")
-@router.message(Command("list"))
-@admin_only
-async def cmd_list(message: Message) -> None:
-    """List all clients."""
-    clients = await _db.get_all_clients()
-    
-    if not clients:
-        await message.answer("ℹ️ No active clients.")
-        return
-
-    text = "📋 **Active Clients:**\n\n"
-    for c in clients:
-        text += f"🔹 `{c.name}` ({c.address})\n"
-    
-    await message.answer(text, parse_mode=ParseMode.MARKDOWN)
-
-
-@router.message(F.text == "📊 Statistics")
-@router.message(Command("stats"))
-@admin_only
-async def cmd_stats(message: Message) -> None:
-    """Show traffic statistics menu."""
-    await show_stats_root(message)
 
 
 
