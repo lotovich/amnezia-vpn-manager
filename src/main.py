@@ -131,13 +131,32 @@ async def main() -> None:
     router = setup_handlers(db, vpn)
     dp.include_router(router)
 
+    # Initial Server Sync: Restore state from DB to Config File
+    logger.info("Performing initial server synchronization from DB...")
+    try:
+        current_clients = await db.get_all_clients()
+        # Convert to dicts for VPNManager
+        clients_dicts = [{"public_key": c.public_key, "address": c.address} for c in current_clients]
+        
+        # Rewrite awg0.conf and sync interface
+        vpn.update_server_config_file(clients_dicts)
+        
+        if await vpn.sync_config():
+             logger.info(f"Initial sync successful. {len(current_clients)} peers active.")
+        else:
+             logger.error("Initial sync failed!")
+             
+    except Exception as e:
+        logger.exception(f"Initial sync error: {e}")
+
     # Start traffic collector in background
     collector_task = asyncio.create_task(traffic_collector(db, vpn))
 
     try:
         # Start polling
         logger.info("Bot started, waiting for commands...")
-        await dp.start_polling(bot, allowed_updates=["message"])
+        await dp.start_polling(bot, allowed_updates=["message", "callback_query"])
+
     finally:
         # Cleanup
         collector_task.cancel()

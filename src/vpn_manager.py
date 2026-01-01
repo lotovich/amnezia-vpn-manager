@@ -279,6 +279,50 @@ AllowedIPs = {client['address']}
         return True
 
 
+    def update_server_config_file(self, clients: list[dict]) -> None:
+        """
+        Update server config file with current clients list.
+        Preserves [Interface] section from existing file.
+        """
+        config_path = "/etc/amneziawg/awg0.conf"
+        
+        # Read current Interface section
+        interface_lines = []
+        if os.path.exists(config_path):
+            with open(config_path, 'r') as f:
+                lines = f.readlines()
+                reading_interface = False
+                for line in lines:
+                    stripped = line.strip()
+                    # Start reading at Interface or comments before it
+                    if stripped == "[Interface]":
+                        reading_interface = True
+                        interface_lines.append(line)
+                    elif stripped == "[Peer]":
+                        reading_interface = False
+                        break
+                    elif reading_interface:
+                        # Append line if we are in interface section (and not starting Peer)
+                        interface_lines.append(line)
+                    elif not reading_interface and not interface_lines:
+                         # Keep comments/blanks at top of file
+                         interface_lines.append(line)
+        else:
+            logger.error(f"Config file {config_path} not found! Cannot sync.")
+            return
+
+        # Write updated config
+        try:
+            with open(config_path, 'w') as f:
+                f.writelines(interface_lines)
+                for client in clients:
+                    f.write("\n[Peer]\n")
+                    f.write(f"PublicKey = {client['public_key']}\n")
+                    f.write(f"AllowedIPs = {client['address']}\n")
+            logger.info(f"Updated config file with {len(clients)} peers")
+        except Exception as e:
+            logger.exception(f"Failed to write config file: {e}")
+
 def format_bytes(bytes_count: int) -> str:
     """Format bytes to human-readable string."""
     for unit in ["B", "KB", "MB", "GB", "TB"]:

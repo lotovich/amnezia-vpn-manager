@@ -16,13 +16,26 @@ from typing import Callable, Any
 
 import qrcode
 from aiogram import Router, Bot, F
-from aiogram.types import Message, BufferedInputFile
-from aiogram.filters import Command, CommandStart
+from aiogram.types import (
+    Message, BufferedInputFile, 
+    ReplyKeyboardMarkup, KeyboardButton,
+    InlineKeyboardMarkup, InlineKeyboardButton,
+    CallbackQuery
+)
+from aiogram.filters import Command, CommandStart, StateFilter
 from aiogram.enums import ParseMode
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 
 from database import Database
 from vpn_manager import VPNManager
 from stats_viz import generate_traffic_chart, generate_stats_summary
+
+
+class VPNStates(StatesGroup):
+    """FSM states for interactive dialogs."""
+    waiting_for_client_name = State()
+
 
 logger = logging.getLogger(__name__)
 router = Router()
@@ -241,6 +254,41 @@ _db: Database = None
 _vpn: VPNManager = None
 
 
+
+# Main menu keyboard
+main_menu = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="👤 Создать клиента"), KeyboardButton(text="🗑 Удалить клиента")],
+        [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="📋 Список клиентов")],
+        [KeyboardButton(text="🆘 Помощь")]
+    ],
+    resize_keyboard=True,
+    input_field_placeholder="Выберите действие"
+)
+
+
+async def full_sync_server() -> None:
+    """
+    Sync DB clients to config file and reload interface.
+    Ensures persistent state matches database state.
+    """
+    if not _db:
+        return
+        
+    clients = await _db.get_all_clients()
+    clients_dicts = [{"public_key": c.public_key, "address": c.address} for c in clients]
+    
+    # 1. Update config file on disk
+    _vpn.update_server_config_file(clients_dicts)
+    
+    # 2. Sync running interface with new config file
+    success = await _vpn.sync_config()
+    if success:
+        logger.info("Server fully synced with database")
+    else:
+        logger.error("Failed to sync server configuration")
+
+
 def setup_handlers(db: Database, vpn: VPNManager) -> Router:
     """Setup handlers with database and VPN manager references."""
     global _db, _vpn
@@ -251,85 +299,85 @@ def setup_handlers(db: Database, vpn: VPNManager) -> Router:
 
 @router.message(CommandStart())
 @admin_only
-async def cmd_start(message: Message) -> None:
-    """Handle /start command."""
+async def cmd_start(message: Message, state: FSMContext) -> None:
+    """Handle /start command - show main menu."""
+    await state.clear()
     await message.answer(
         "🔐 **AmneziaWG VPN Manager**\n\n"
-        "Available commands:\n"
-        "• `/create <name>` — Create new VPN client\n"
-        "• `/delete <name>` — Delete VPN client\n"
-        "• `/list` — List all clients\n"
-        "• `/stats` — Show traffic statistics\n"
-        "• `/help` — Show this message",
+        "Добро пожаловать! Используйте меню для управления сервером.\n"
+        "Все изменения применяются синхронно и сохраняются.",
+        reply_markup=main_menu,
         parse_mode=ParseMode.MARKDOWN
     )
 
 
 @router.message(Command("help"))
+@router.message(F.text == "🆘 Помощь")
 @admin_only
 async def cmd_help(message: Message) -> None:
     """Handle /help command."""
-    await cmd_start(message)
+    await message.answer(
+        "📖 **Справка по боту**\n\n"
+        "• **Создать клиента**: Запросит имя и выдаст конфиг (QR + файл).\n"
+        "• **Удалить клиента**: Покажет список кнопок для удаления.\n"
+        "• **Статистика**: Показывает графики использования трафика.\n"
+        "• **Список**: Простой текстовый список всех клиентов.\n\n"
+        "Все клиенты автоматически сохраняются в конфигурации сервера.",
+        reply_markup=main_menu,
+        parse_mode=ParseMode.MARKDOWN
+    )
 
-
-@router.message(Command("create"))
+@router.message(F.text == "👤 Создать клиента")
 @admin_only
-async def cmd_create(message: Message) -> None:
-    """
-    Handle /create <client_name> command.
-    Creates a new VPN client with generated keys.
-    """
-    # Parse client name from command
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        await message.answer(
-            "❌ Usage: `/create <client_name>`\n"
-            "Example: `/create phone_john`",
-            parse_mode=ParseMode.MARKDOWN
-        )
-        return
+async def start_create_client(message: Message, state: FSMContext) -> None:
+    """Start client creation dialog."""
+    await message.answer("✍️ Введите имя для нового клиента (латиница, цифры, _):", reply_markup=main_menu)
+    await state.set_state(VPNStates.waiting_for_client_name)
 
-    client_name = parts[1].strip()
+
+@router.message(VPNStates.waiting_for_client_name)
+@admin_only
+async def process_create_client(message: Message, state: FSMContext) -> None:
+    """Process client name and create VPN config."""
+    client_name = message.text.strip()
 
     # Validate name
     is_valid, error = validate_client_name(client_name)
     if not is_valid:
-        await message.answer(f"❌ {error}")
+        await message.answer(f"❌ {error}\nПопробуйте другое имя:")
         return
 
     # Check if client already exists
     if await _db.client_exists(client_name):
-        await message.answer(f"❌ Client `{client_name}` already exists!", parse_mode=ParseMode.MARKDOWN)
+        await message.answer(f"❌ Клиент `{client_name}` уже существует! Введите другое имя:", parse_mode=ParseMode.MARKDOWN)
         return
 
     try:
-        # Send "working" message
-        status_msg = await message.answer("⏳ Generating keys...")
+        status_msg = await message.answer("⏳ Создание клиента и синхронизация сервера...")
 
-        # Generate keys
+        # Generate keys and IP
         keypair = await _vpn.generate_keypair()
-
-        # Get next available IP
         client_ip = await _db.get_next_available_ip()
 
         # Add to database
-        client = await _db.add_client(
+        await _db.add_client(
             name=client_name,
             public_key=keypair.public_key,
             private_key=keypair.private_key,
             address=client_ip
         )
 
-        # Add peer to running interface
-        await _vpn.add_peer(keypair.public_key, client_ip)
+        # FULL SYNC: Update server config file and allow interface to reload
+        # This ensures persistence and "real" update
+        await full_sync_server()
 
-        # Generate client config
+        # Generate client config (for user)
         config = _vpn.generate_client_config(
             client_private_key=keypair.private_key,
             client_address=client_ip
         )
 
-        # Generate AmneziaVPN-compatible QR code data (Raw Base64)
+        # Generate AmneziaVPN QR data (Raw Base64)
         endpoint = f"{_vpn.vpn_host}:{_vpn.vpn_port}"
         qr_data_base64 = generate_amnezia_qr_data(
             client_private_key=keypair.private_key,
@@ -340,134 +388,140 @@ async def cmd_create(message: Message) -> None:
             awg_params=_vpn.awg_params
         )
 
-        # Generate QR code image from Raw Base64 (Amnezia format)
+        # Generate QR image
         qr_image = generate_qr_code(qr_data_base64)
         
-        # Delete status message
         await status_msg.delete()
 
-        # Send config file (Native .conf)
-        config_file = BufferedInputFile(
-            config.encode(),
-            filename=f"{client_name}.conf"
-        )
+        # Send Config File
+        config_file = BufferedInputFile(config.encode(), filename=f"{client_name}.conf")
         await message.answer_document(
             config_file,
-            caption=f"✅ Client `{client_name}` created!\nIP: `{client_ip}`",
+            caption=f"✅ Клиент `{client_name}` создан!\nIP: `{client_ip}`",
             parse_mode=ParseMode.MARKDOWN
         )
 
-        # Send QR code as photo (Raw Base64 data)
+        # Send QR Photo
         qr_photo = BufferedInputFile(qr_image, filename=f"{client_name}_qr.png")
         await message.answer_photo(
             qr_photo,
-            caption="📱 Scan with AmneziaVPN app"
+            caption="📱 QR-код для AmneziaVPN"
         )
         
-        # Send text key with vpn:// prefix (copy-paste)
+        # Send Text Key
         vpn_link = f"vpn://{qr_data_base64}"
         await message.answer(
-            f"🔑 **For AmneziaVPN app** (tap to copy):\n\n"
-            f"`{vpn_link}`",
+            f"🔑 **Ключ для AmneziaVPN** (нажмите чтобы скопировать):\n\n`{vpn_link}`",
             parse_mode=ParseMode.MARKDOWN
         )
 
-        logger.info(f"Created client: {client_name} with IP {client_ip}")
-
+        logger.info(f"Created client: {client_name} ({client_ip})")
+        
+        # Reset state
+        await state.clear()
+        
     except Exception as e:
         logger.exception(f"Failed to create client: {e}")
-        await message.answer(f"❌ Failed to create client: {e}")
+        await message.answer(f"❌ Ошибка при создании: {e}")
+        await state.clear()
 
 
-@router.message(Command("delete"))
+@router.message(F.text == "🗑 Удалить клиента")
 @admin_only
-async def cmd_delete(message: Message) -> None:
-    """Handle /delete <client_name> command."""
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        await message.answer(
-            "❌ Usage: `/delete <client_name>`",
-            parse_mode=ParseMode.MARKDOWN
-        )
+async def start_delete_client(message: Message) -> None:
+    """Show client deletion menu."""
+    clients = await _db.get_all_clients()
+    if not clients:
+        await message.answer("Список клиентов пуст.")
         return
 
-    client_name = parts[1].strip()
+    # Create inline keyboard with clients
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"❌ {c.name}", callback_data=f"del:{c.name}")]
+        for c in clients
+    ])
+    await message.answer("Выберите клиента для удаления (доступ будет закрыт немедленно):", reply_markup=keyboard)
 
-    # Get client info before deletion
-    client = await _db.get_client_by_name(client_name)
-    if not client:
-        await message.answer(f"❌ Client `{client_name}` not found!", parse_mode=ParseMode.MARKDOWN)
+
+@router.callback_query(F.data.startswith("del:"))
+async def process_delete_callback(callback: CallbackQuery):
+    """Handle deletion callback."""
+    if not callback.data:
+        return
+        
+    client_name = callback.data.split(":")[1]
+    
+    # Check existance
+    if not await _db.client_exists(client_name):
+        await callback.answer("Клиент уже удален", show_alert=True)
+        await callback.message.delete()
         return
 
     try:
-        # Remove from running interface
-        await _vpn.remove_peer(client.public_key)
-
-        # Remove from database
+        # Delete from DB
         await _db.delete_client(client_name)
-
-        await message.answer(f"✅ Client `{client_name}` deleted!", parse_mode=ParseMode.MARKDOWN)
+        
+        # FULL SYNC (Remove from config and reload interface)
+        await full_sync_server()
+        
+        await callback.answer(f"Клиент {client_name} удален")
+        await callback.message.edit_text(f"✅ Клиент `{client_name}` успешно удален.\nДоступ закрыт.", parse_mode=ParseMode.MARKDOWN)
         logger.info(f"Deleted client: {client_name}")
-
+        
     except Exception as e:
-        logger.exception(f"Failed to delete client: {e}")
-        await message.answer(f"❌ Failed to delete client: {e}")
+        logger.exception(f"Delete failed: {e}")
+        await callback.answer("Ошибка при удалении", show_alert=True)
 
 
+@router.message(F.text == "📋 Список клиентов")
 @router.message(Command("list"))
 @admin_only
 async def cmd_list(message: Message) -> None:
-    """Handle /list command - show all clients."""
+    """Show list of clients."""
     clients = await _db.get_all_clients()
 
     if not clients:
-        await message.answer("📋 No clients configured yet.")
+        await message.answer("📋 Список клиентов пуст.")
         return
 
-    lines = ["📋 **VPN Clients:**\n"]
+    lines = ["📋 **Список клиентов:**\n"]
     for i, client in enumerate(clients, 1):
         created = client.created_at.strftime("%Y-%m-%d")
-        lines.append(f"{i}. `{client.name}` — {client.address} (created {created})")
+        lines.append(f"{i}. `{client.name}` — {client.address}")
 
     await message.answer("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
 
+@router.message(F.text == "📊 Статистика")
 @router.message(Command("stats"))
 @admin_only
 async def cmd_stats(message: Message) -> None:
-    """Handle /stats command - show traffic statistics with chart."""
+    """Show traffic statistics."""
     try:
-        # Get traffic data from database
         traffic_data = await _db.get_total_traffic_by_client()
 
         if not traffic_data:
-            await message.answer("📊 No traffic data collected yet.")
+            await message.answer("📊 Нет данных о трафике.")
             return
 
-        # Generate chart
+        # Generate visual chart
         chart_image = generate_traffic_chart(traffic_data)
-
-        # Generate text summary
         summary = generate_stats_summary(traffic_data)
 
         if chart_image:
-            # Send chart with summary as caption
             chart_file = BufferedInputFile(chart_image, filename="traffic_stats.png")
             await message.answer_photo(chart_file, caption=summary, parse_mode=ParseMode.MARKDOWN)
         else:
-            # Just send text if chart generation failed
             await message.answer(summary, parse_mode=ParseMode.MARKDOWN)
 
     except Exception as e:
-        logger.exception(f"Failed to generate stats: {e}")
-        await message.answer(f"❌ Failed to generate stats: {e}")
+        logger.exception(f"Stats error: {e}")
+        await message.answer(f"❌ Ошибка статистики: {e}")
 
 
 @router.message(F.text)
 @admin_only
 async def unknown_command(message: Message) -> None:
-    """Handle unknown text messages."""
-    if message.text.startswith("/"):
-        await message.answer(
-            "❓ Unknown command. Use /help to see available commands."
-        )
+    """Handle unknown messages."""
+    await message.answer("❓ Неизвестная команда. Используйте меню.", reply_markup=main_menu)
+
