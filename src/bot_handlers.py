@@ -337,6 +337,7 @@ async def cmd_help(message: Message) -> None:
 
 
 @router.message(F.text == "👤 Create Client")
+@router.message(Command("create"))
 @admin_only
 async def start_create_client(message: Message, state: FSMContext) -> None:
     """Start client creation dialog."""
