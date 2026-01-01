@@ -95,12 +95,16 @@ def validate_client_name(name: str) -> tuple[bool, str]:
 
 
 def generate_qr_code(data: str) -> bytes:
-    """Generate QR code image from data string."""
+    """Generate QR code image from data string.
+    
+    Uses larger box_size and higher error correction for better
+    camera scanning, especially on phone screens.
+    """
     qr = qrcode.QRCode(
         version=None,  # Auto-size based on data
-        error_correction=qrcode.constants.ERROR_CORRECT_L,  # Low for max capacity
-        box_size=10,  # Larger boxes for better scanning
-        border=4,
+        error_correction=qrcode.constants.ERROR_CORRECT_M,  # Medium for better scanning
+        box_size=15,  # Larger boxes for much better scanning
+        border=6,     # Wider border for easier detection
     )
     qr.add_data(data)
     qr.make(fit=True)
@@ -318,11 +322,18 @@ async def cmd_create(message: Message) -> None:
             parse_mode=ParseMode.MARKDOWN
         )
 
-        # Send QR code as document (not photo!) to avoid Telegram compression
+        # Send QR code as photo first (for easy scanning directly from chat)
+        qr_photo = BufferedInputFile(qr_image, filename=f"{client_name}_qr.png")
+        await message.answer_photo(
+            qr_photo,
+            caption="📱 Scan this QR code with AmneziaVPN app"
+        )
+        
+        # Also send QR code as document (full quality, for saving)
         qr_file = BufferedInputFile(qr_image, filename=f"{client_name}_qr.png")
         await message.answer_document(
             qr_file,
-            caption="📱 Scan this QR code with AmneziaVPN app"
+            caption="📁 QR code file (full quality)"
         )
 
         # Send text key for copy-paste (for AmneziaVPN import)
