@@ -296,7 +296,11 @@ async def cmd_create(message: Message) -> None:
             client_address=client_ip
         )
 
-        # Generate AmneziaVPN-compatible QR code
+        # Generate QR code with NATIVE WireGuard .conf format
+        # This works reliably with AmneziaWG app (used in amnezia-wg-easy)
+        qr_image = generate_qr_code(config)
+        
+        # Also generate vpn:// string for AmneziaVPN app
         endpoint = f"{_vpn.vpn_host}:{_vpn.vpn_port}"
         qr_data = generate_amnezia_qr_data(
             client_private_key=keypair.private_key,
@@ -306,7 +310,6 @@ async def cmd_create(message: Message) -> None:
             dns=_vpn.dns,
             awg_params=_vpn.awg_params
         )
-        qr_image = generate_qr_code(qr_data)
 
         # Delete status message
         await status_msg.delete()
@@ -322,23 +325,23 @@ async def cmd_create(message: Message) -> None:
             parse_mode=ParseMode.MARKDOWN
         )
 
-        # Send QR code as photo first (for easy scanning directly from chat)
+        # Send QR code with native .conf format (works with AmneziaWG)
         qr_photo = BufferedInputFile(qr_image, filename=f"{client_name}_qr.png")
         await message.answer_photo(
             qr_photo,
-            caption="📱 Scan this QR code with AmneziaVPN app"
+            caption="📱 Scan with AmneziaWG app (native WireGuard format)"
         )
         
-        # Also send QR code as document (full quality, for saving)
+        # Also send QR code as document (full quality)
         qr_file = BufferedInputFile(qr_image, filename=f"{client_name}_qr.png")
         await message.answer_document(
             qr_file,
-            caption="📁 QR code file (full quality)"
+            caption="📁 QR code (native .conf format)"
         )
 
-        # Send text key for copy-paste (for AmneziaVPN import)
+        # Send vpn:// key for AmneziaVPN app (copy-paste)
         await message.answer(
-            f"🔑 **Connection key** (tap to copy):\n\n"
+            f"🔑 **For AmneziaVPN app** (tap to copy):\n\n"
             f"`{qr_data}`",
             parse_mode=ParseMode.MARKDOWN
         )
