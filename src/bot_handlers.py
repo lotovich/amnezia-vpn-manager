@@ -413,7 +413,10 @@ async def process_app_type_callback(callback: CallbackQuery, state: FSMContext):
         return
 
     try:
-        await callback.message.edit_text(f"⏳ Creating client `{client_name}` for {app_type}...")
+        # Mapping app_type to pretty name
+        app_name = "Amnezia VPN" if app_type == "amnezia_vpn" else "AmneziaWG"
+        
+        await callback.message.edit_text(f"⏳ Creating client <b>{client_name}</b> for {app_name}...", parse_mode=ParseMode.HTML)
 
         # Generate keys and IP
         keypair = await _vpn.generate_keypair()
@@ -461,29 +464,31 @@ async def process_app_type_callback(callback: CallbackQuery, state: FSMContext):
         config_file = BufferedInputFile(config_text.encode(), filename=f"{client_name}.conf")
         await callback.message.answer_document(
             config_file,
-            caption=f"✅ Client `{client_name}` created for **{app_type}**.\nIP: `{client_ip}`",
-            parse_mode=ParseMode.MARKDOWN
+            caption=f"✅ Client <b>{client_name}</b> created for <b>{app_name}</b>.\nIP: <code>{client_ip}</code>",
+            parse_mode=ParseMode.HTML
         )
 
         # Send QR Photo
         qr_photo = BufferedInputFile(qr_image, filename=f"{client_name}_qr.png")
         await callback.message.answer_photo(
             qr_photo,
-            caption=f"📱 QR code for **{app_type}**",
-            reply_markup=main_menu
+            caption=f"📱 QR code for <b>{app_name}</b>",
+            reply_markup=main_menu,
+            parse_mode=ParseMode.HTML
         )
         
         # Send Text Key
         if app_type == "amnezia_vpn":
             await callback.message.answer(
-                f"🔑 **Key for Amnezia VPN** (tap to copy):\n\n`{qr_data_text}`",
-                parse_mode=ParseMode.MARKDOWN
+                f"🔑 <b>Key for Amnezia VPN</b> (tap to copy):\n\n<code>{qr_data_text}</code>",
+                parse_mode=ParseMode.HTML
             )
         else:
+            # For AmneziaWG, we use a preformatted block for the INI config
             await callback.message.answer(
-                "📝 **Config Text** (for manual copy):\n\n"
-                f"```ini\n{qr_data_text}\n```",
-                parse_mode=ParseMode.MARKDOWN
+                "📝 <b>Config Text</b> (for manual copy):\n\n"
+                f"<pre>{qr_data_text}</pre>",
+                parse_mode=ParseMode.HTML
             )
 
         await callback.message.delete()
@@ -492,7 +497,7 @@ async def process_app_type_callback(callback: CallbackQuery, state: FSMContext):
         
     except Exception as e:
         logger.exception(f"Failed to create client: {e}")
-        await callback.message.answer(f"❌ Error creating client: {e}", reply_markup=main_menu)
+        await callback.message.answer(f"❌ Error creating client: {e}", reply_markup=main_menu, parse_mode=None)
         await state.clear()
 
 
@@ -860,9 +865,11 @@ async def process_stats_end_date(message: Message, state: FSMContext) -> None:
 async def unknown_command(message: Message) -> None:
     """Handle unknown messages."""
     logger.warning(f"Unknown command from user {message.from_user.id}: {message.text}")
+    # Use HTML to avoid issues with special characters in user text
+    safe_text = message.text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     await message.answer(
-        f"❓ Unknown command: `{message.text}`\n\nPlease use the menu below:",
+        f"❓ Unknown command: <code>{safe_text}</code>\n\nPlease use the menu below:",
         reply_markup=main_menu,
-        parse_mode=ParseMode.MARKDOWN
+        parse_mode=ParseMode.HTML
     )
 
