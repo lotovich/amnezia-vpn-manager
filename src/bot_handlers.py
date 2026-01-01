@@ -11,6 +11,7 @@ import re
 import struct
 import time
 import zlib
+from datetime import datetime, timedelta
 from functools import wraps
 from typing import Callable, Any
 
@@ -495,67 +496,178 @@ async def cmd_list(message: Message) -> None:
     await message.answer("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
 
 
+def get_time_ago(timestamp: int) -> str:
+    """Format timestamp to relative time string."""
+    if not timestamp:
+        return "Никогда"
+    
+    diff = int(time.time() - timestamp)
+    if diff < 0:
+        return "Только что"
+    if diff < 60:
+        return f"{diff} сек. назад"
+    elif diff < 3600:
+        return f"{diff // 60} мин. назад"
+    elif diff < 86400:
+        return f"{diff // 3600} ч. назад"
+    else:
+        return f"{diff // 86400} дн. назад"
+
+
+async def show_stats_root(message: Message, edit: bool = False) -> None:
+    """Show root statistics menu (select target)."""
+    clients = await _db.get_all_clients()
+    
+    keyboard_builder = []
+    # Button for All Clients
+    keyboard_builder.append([InlineKeyboardButton(text="👥 Все клиенты (Общая)", callback_data="stats_sel:ALL")])
+    keyboard_builder.append([InlineKeyboardButton(text="🏆 Топ пользователей", callback_data="stats_view:top:ALL")])
+
+    # Buttons for each client (2 per row)
+    rows = []
+    for c in clients[:50]: # Safety limit
+        rows.append(InlineKeyboardButton(text=f"👤 {c.name}", callback_data=f"stats_sel:{c.name}"))
+        if len(rows) == 2:
+             keyboard_builder.append(rows)
+             rows = []
+    if rows:
+        keyboard_builder.append(rows)
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_builder)
+    text = "📊 **Статистика**\nВыберите клиента или общий отчет:"
+    
+    if edit:
+        await message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+    else:
+        await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+
+
 @router.message(F.text == "📊 Статистика")
 @router.message(Command("stats"))
 @admin_only
 async def cmd_stats(message: Message) -> None:
-    """Show detailed traffic statistics menu."""
-    stats_keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📈 Динамика (24ч)", callback_data="stats:24h")],
-        [InlineKeyboardButton(text="📅 По часам (Сутки)", callback_data="stats:daily"),
-         InlineKeyboardButton(text="📆 По дням недели", callback_data="stats:weekly")],
-        [InlineKeyboardButton(text="👥 Топ пользователей", callback_data="stats:top")]
+    """Show traffic statistics menu."""
+    await show_stats_root(message)
+
+
+@router.callback_query(F.data == "stats_back")
+async def process_stats_back(callback: CallbackQuery):
+    """Back to root stats menu."""
+    await show_stats_root(callback.message, edit=True)
+
+
+@router.callback_query(F.data.startswith("stats_sel:"))
+async def process_stats_selection(callback: CallbackQuery):
+    """Handle client selection for stats."""
+    target = callback.data.split(":")[1]
+    
+    if target == "ALL":
+        text = "📊 **Статистика: Все клиенты**\nВыберите тип отчета:"
+    else:
+        # Get client info
+        client = await _db.get_client_by_name(target)
+        if not client:
+             await callback.answer("Клиент не найден", show_alert=True)
+             return
+             
+        # Get Last Handshake
+        last_seen = "Неизвестно"
+        try:
+             stats = await _vpn.get_interface_stats()
+             # Find stats for this peer
+             peer_stat = next((s for s in stats if s.public_key == client.public_key), None)
+             if peer_stat:
+                 last_seen = get_time_ago(peer_stat.latest_handshake)
+        except Exception as e:
+             logger.error(f"Failed to get handshake: {e}")
+             
+        text = (
+            f"👤 **Клиент**: `{client.name}`\n"
+            f"📡 **IP**: `{client.address}`\n"
+            f"⏱ **Последний вход**: `{last_seen}`\n\n"
+            "Выберите тип отчета:"
+        )
+
+    # Menu for selected target
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📈 Динамика (24ч)", callback_data=f"stats_view:24h:{target}"),
+         InlineKeyboardButton(text="📈 Динамика (7д)", callback_data=f"stats_view:7d:{target}")],
+        [InlineKeyboardButton(text="📅 Суточный профиль", callback_data=f"stats_view:daily:{target}"),
+         InlineKeyboardButton(text="📆 Недельный профиль", callback_data=f"stats_view:weekly:{target}")],
+        [InlineKeyboardButton(text="🔙 Назад", callback_data="stats_back")]
     ])
-    await message.answer("📊 Выберите тип статистики:", reply_markup=stats_keyboard)
+    
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
 
-@router.callback_query(F.data.startswith("stats:"))
-async def process_stats_callback(callback: CallbackQuery):
-    """Handle statistics menu callbacks."""
-    action = callback.data.split(":")[1]
+@router.callback_query(F.data.startswith("stats_view:"))
+async def process_stats_view(callback: CallbackQuery):
+    """Generate and show specific chart."""
+    _, action, target = callback.data.split(":")
+    
+    # Resolve client_id
+    client_id = None
+    target_name = "Все клиенты"
+    
+    if target != "ALL":
+        client = await _db.get_client_by_name(target)
+        if client:
+            client_id = client.id
+            target_name = client.name
+        else:
+             await callback.answer("Клиент не найден", show_alert=True)
+             return
+
+    filename = "stats.png"
     chart_img = None
     caption = ""
-    filename = "stats.png"
 
     try:
-        # Indicate loading
         await callback.message.edit_text("⏳ Генерирую график...")
         
         if action == "24h":
-            data = await _db.get_traffic_series(days=1)
-            chart_img = generate_series_chart(data, "Трафик за последние 24 часа")
-            caption = "📈 **Динамика загрузки и отдачи за сутки**"
+            data = await _db.get_traffic_series(days=1, client_id=client_id)
+            chart_img = generate_series_chart(data, f"Динамика (24ч): {target_name}")
+            caption = f"📈 **Динамика за 24ч**: {target_name}"
+            
+        elif action == "7d":
+            data = await _db.get_traffic_series(days=7, client_id=client_id)
+            chart_img = generate_series_chart(data, f"Динамика (7 дней): {target_name}")
+            caption = f"📈 **Динамика за 7 дней**: {target_name}"
             
         elif action == "daily":
-            data = await _db.get_hourly_activity()
-            chart_img = generate_hourly_chart(data, "Средняя активность по часам")
-            caption = "📅 **Профиль нагрузки по времени суток (0-23)**"
+            data = await _db.get_hourly_activity(client_id=client_id)
+            chart_img = generate_hourly_chart(data, f"Суточный профиль: {target_name}")
+            caption = f"📅 **Суточный профиль**: {target_name}\n(Средняя активность по часам)"
             
         elif action == "weekly":
-            data = await _db.get_weekly_activity()
-            chart_img = generate_weekly_chart(data, "Активность по дням недели")
-            caption = "📆 **Нагрузка по дням недели**"
+            data = await _db.get_weekly_activity(client_id=client_id)
+            chart_img = generate_weekly_chart(data, f"Недельный профиль: {target_name}")
+            caption = f"📆 **Недельный профиль**: {target_name}\n(Активность по дням недели)"
             
         elif action == "top":
+            # Only for ALL
             data = await _db.get_total_traffic_by_client()
             chart_img = generate_traffic_chart(data)
             caption = generate_stats_summary(data)
 
         if chart_img:
             file = BufferedInputFile(chart_img, filename=filename)
-            # Delete "Generate..." message and send photo (edit_media is cleaner but requires InputMediaPhoto)
             await callback.message.delete()
             await callback.message.answer_photo(file, caption=caption, parse_mode=ParseMode.MARKDOWN)
+            # We lose navigation here because we sent a new photo message
+            # Optionally add a "Back" button to the caption/message?
+            # Telegram doesn't allow inline buttons on Media easily without re-sending keyboard.
+            # But the user can just use /stats again.
         else:
             await callback.message.edit_text("❌ Нет данных для отображения.")
             
     except Exception as e:
         logger.exception(f"Stats generation failed: {e}")
-        # Try to edit message if possible
         try:
             await callback.message.edit_text(f"❌ Ошибка: {e}")
         except:
-            await callback.message.answer(f"❌ Ошибка: {e}")
+            pass
     
     await callback.answer()
 
