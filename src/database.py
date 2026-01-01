@@ -366,6 +366,37 @@ class Database:
             async with db.execute(query, tuple(params)) as cursor:
                 return [dict(row) for row in await cursor.fetchall()]
 
+    async def get_traffic_series_range(self, start_date: str, end_date: str, client_id: Optional[int] = None) -> list[dict]:
+        """
+        Get traffic history grouped by hour for a specific date range.
+        Dates should be 'YYYY-MM-DD'.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            
+            # We append times to date strings to cover the full range
+            start_ts = f"{start_date} 00:00:00"
+            end_ts = f"{end_date} 23:59:59"
+            
+            query = """
+                SELECT 
+                    strftime('%Y-%m-%d %H:00:00', recorded_at) as ts,
+                    SUM(bytes_received) as rx,
+                    SUM(bytes_sent) as tx
+                FROM traffic_history
+                WHERE recorded_at BETWEEN ? AND ?
+            """
+            params = [start_ts, end_ts]
+            
+            if client_id:
+                query += " AND client_id = ?"
+                params.append(client_id)
+                
+            query += " GROUP BY ts ORDER BY ts"
+            
+            async with db.execute(query, tuple(params)) as cursor:
+                return [dict(row) for row in await cursor.fetchall()]
+
     async def get_hourly_activity(self, client_id: Optional[int] = None) -> list[dict]:
         """
         Get average traffic volume aggregated by hour of day (0-23).

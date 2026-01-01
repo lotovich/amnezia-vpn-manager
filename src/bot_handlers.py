@@ -258,16 +258,21 @@ _db: Database = None
 _vpn: VPNManager = None
 
 
+# States for FSM
+class VPNStates(StatesGroup):
+    waiting_for_client_name = State()
+    waiting_for_stats_start = State()
+    waiting_for_stats_end = State()
+
 
 # Main menu keyboard
 main_menu = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="👤 Создать клиента"), KeyboardButton(text="🗑 Удалить клиента")],
-        [KeyboardButton(text="📊 Статистика"), KeyboardButton(text="📋 Список клиентов")],
-        [KeyboardButton(text="🆘 Помощь")]
+        [KeyboardButton(text="👤 Create Client"), KeyboardButton(text="🗑 Delete Client")],
+        [KeyboardButton(text="📋 List Clients"), KeyboardButton(text="📊 Statistics")]
     ],
     resize_keyboard=True,
-    input_field_placeholder="Выберите действие"
+    input_field_placeholder="Select an action"
 )
 
 
@@ -348,16 +353,16 @@ async def process_create_client(message: Message, state: FSMContext) -> None:
     # Validate name
     is_valid, error = validate_client_name(client_name)
     if not is_valid:
-        await message.answer(f"❌ {error}\nПопробуйте другое имя:")
+        await message.answer(f"❌ {error}\nTry another name:")
         return
 
     # Check if client already exists
     if await _db.client_exists(client_name):
-        await message.answer(f"❌ Клиент `{client_name}` уже существует! Введите другое имя:", parse_mode=ParseMode.MARKDOWN)
+        await message.answer(f"❌ Client `{client_name}` already exists! Please enter a different name:", parse_mode=ParseMode.MARKDOWN)
         return
 
     try:
-        status_msg = await message.answer("⏳ Создание клиента и синхронизация сервера...")
+        status_msg = await message.answer("⏳ Creating client and synchronizing server...")
 
         # Generate keys and IP
         keypair = await _vpn.generate_keypair()
@@ -401,7 +406,7 @@ async def process_create_client(message: Message, state: FSMContext) -> None:
         config_file = BufferedInputFile(config.encode(), filename=f"{client_name}.conf")
         await message.answer_document(
             config_file,
-            caption=f"✅ Клиент `{client_name}` создан!\nIP: `{client_ip}`",
+            caption=f"✅ Client `{client_name}` created successfully!\nIP: `{client_ip}`",
             parse_mode=ParseMode.MARKDOWN
         )
 
@@ -409,13 +414,14 @@ async def process_create_client(message: Message, state: FSMContext) -> None:
         qr_photo = BufferedInputFile(qr_image, filename=f"{client_name}_qr.png")
         await message.answer_photo(
             qr_photo,
-            caption="📱 QR-код для AmneziaVPN"
+            caption="📱 QR code for AmneziaVPN",
+            reply_markup=main_menu
         )
         
         # Send Text Key
         vpn_link = f"vpn://{qr_data_base64}"
         await message.answer(
-            f"🔑 **Ключ для AmneziaVPN** (нажмите чтобы скопировать):\n\n`{vpn_link}`",
+            f"🔑 **Key for AmneziaVPN** (tap to copy):\n\n`{vpn_link}`",
             parse_mode=ParseMode.MARKDOWN
         )
 
@@ -426,17 +432,18 @@ async def process_create_client(message: Message, state: FSMContext) -> None:
         
     except Exception as e:
         logger.exception(f"Failed to create client: {e}")
-        await message.answer(f"❌ Ошибка при создании: {e}")
+        await message.answer(f"❌ Error creating client: {e}", reply_markup=main_menu)
         await state.clear()
 
 
-@router.message(F.text == "🗑 Удалить клиента")
+@router.message(F.text == "🗑 Delete Client")
+@router.message(Command("delete"))
 @admin_only
-async def start_delete_client(message: Message) -> None:
+async def cmd_delete(message: Message) -> None:
     """Show client deletion menu."""
     clients = await _db.get_all_clients()
     if not clients:
-        await message.answer("Список клиентов пуст.")
+        await message.answer("ℹ️ No clients to delete.")
         return
 
     # Create inline keyboard with clients
@@ -444,7 +451,7 @@ async def start_delete_client(message: Message) -> None:
         [InlineKeyboardButton(text=f"❌ {c.name}", callback_data=f"del:{c.name}")]
         for c in clients
     ])
-    await message.answer("Выберите клиента для удаления (доступ будет закрыт немедленно):", reply_markup=keyboard)
+    await message.answer("🗑 **Select client to delete:**\nWarning: This action cannot be undone!", reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
 
 @router.callback_query(F.data.startswith("del:"))
@@ -457,7 +464,7 @@ async def process_delete_callback(callback: CallbackQuery):
     
     # Check existance
     if not await _db.client_exists(client_name):
-        await callback.answer("Клиент уже удален", show_alert=True)
+        await callback.answer("Client already deleted", show_alert=True)
         await callback.message.delete()
         return
 
@@ -468,8 +475,8 @@ async def process_delete_callback(callback: CallbackQuery):
         # FULL SYNC (Remove from config and reload interface)
         await full_sync_server()
         
-        await callback.answer(f"Клиент {client_name} удален")
-        await callback.message.edit_text(f"✅ Клиент `{client_name}` успешно удален.\nДоступ закрыт.", parse_mode=ParseMode.MARKDOWN)
+        await callback.answer(f"Client {client_name} deleted")
+        await callback.message.edit_text(f"✅ Client `{client_name}` successfully deleted.\nAccess revoked.", parse_mode=ParseMode.MARKDOWN)
         logger.info(f"Deleted client: {client_name}")
         
     except Exception as e:
@@ -477,41 +484,40 @@ async def process_delete_callback(callback: CallbackQuery):
         await callback.answer("Ошибка при удалении", show_alert=True)
 
 
-@router.message(F.text == "📋 Список клиентов")
+@router.message(F.text == "📋 List Clients")
 @router.message(Command("list"))
 @admin_only
 async def cmd_list(message: Message) -> None:
-    """Show list of clients."""
+    """List all clients."""
     clients = await _db.get_all_clients()
-
+    
     if not clients:
-        await message.answer("📋 Список клиентов пуст.")
+        await message.answer("ℹ️ No active clients.")
         return
 
-    lines = ["📋 **Список клиентов:**\n"]
-    for i, client in enumerate(clients, 1):
-        created = client.created_at.strftime("%Y-%m-%d")
-        lines.append(f"{i}. `{client.name}` — {client.address}")
-
-    await message.answer("\n".join(lines), parse_mode=ParseMode.MARKDOWN)
+    text = "📋 **Active Clients:**\n\n"
+    for c in clients:
+        text += f"🔹 `{c.name}` ({c.address})\n"
+    
+    await message.answer(text, parse_mode=ParseMode.MARKDOWN)
 
 
 def get_time_ago(timestamp: int) -> str:
     """Format timestamp to relative time string."""
     if not timestamp:
-        return "Никогда"
+        return "Never"
     
     diff = int(time.time() - timestamp)
     if diff < 0:
-        return "Только что"
+        return "Just now"
     if diff < 60:
-        return f"{diff} сек. назад"
+        return f"{diff} sec. ago"
     elif diff < 3600:
-        return f"{diff // 60} мин. назад"
+        return f"{diff // 60} min. ago"
     elif diff < 86400:
-        return f"{diff // 3600} ч. назад"
+        return f"{diff // 3600} hours ago"
     else:
-        return f"{diff // 86400} дн. назад"
+        return f"{diff // 86400} days ago"
 
 
 async def show_stats_root(message: Message, edit: bool = False) -> None:
@@ -520,12 +526,13 @@ async def show_stats_root(message: Message, edit: bool = False) -> None:
     
     keyboard_builder = []
     # Button for All Clients
-    keyboard_builder.append([InlineKeyboardButton(text="👥 Все клиенты (Общая)", callback_data="stats_sel:ALL")])
-    keyboard_builder.append([InlineKeyboardButton(text="🏆 Топ пользователей", callback_data="stats_view:top:ALL")])
+    keyboard_builder.append([InlineKeyboardButton(text="👥 All Clients (Total)", callback_data="stats_sel:ALL")])
+    keyboard_builder.append([InlineKeyboardButton(text="🏆 Top Users", callback_data="stats_view:top:ALL")])
 
     # Buttons for each client (2 per row)
     rows = []
-    for c in clients[:50]: # Safety limit
+    # Limit number of buttons to avoid Telegram limits
+    for c in clients[:50]: 
         rows.append(InlineKeyboardButton(text=f"👤 {c.name}", callback_data=f"stats_sel:{c.name}"))
         if len(rows) == 2:
              keyboard_builder.append(rows)
@@ -534,7 +541,7 @@ async def show_stats_root(message: Message, edit: bool = False) -> None:
         keyboard_builder.append(rows)
 
     keyboard = InlineKeyboardMarkup(inline_keyboard=keyboard_builder)
-    text = "📊 **Статистика**\nВыберите клиента или общий отчет:"
+    text = "📊 **Statistics**\nSelect a client or view global report:"
     
     if edit:
         await message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
@@ -542,7 +549,7 @@ async def show_stats_root(message: Message, edit: bool = False) -> None:
         await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
 
-@router.message(F.text == "📊 Статистика")
+@router.message(F.text == "📊 Statistics")
 @router.message(Command("stats"))
 @admin_only
 async def cmd_stats(message: Message) -> None:
@@ -562,52 +569,66 @@ async def process_stats_selection(callback: CallbackQuery):
     target = callback.data.split(":")[1]
     
     if target == "ALL":
-        text = "📊 **Статистика: Все клиенты**\nВыберите тип отчета:"
+        text = "📊 **Statistics: Global**\nSelect report type:"
     else:
         # Get client info
         client = await _db.get_client_by_name(target)
         if not client:
-             await callback.answer("Клиент не найден", show_alert=True)
+             await callback.answer("Client not found", show_alert=True)
              return
              
         # Get Last Handshake
-        last_seen = "Неизвестно"
+        last_seen = "Never"
         try:
              stats = await _vpn.get_interface_stats()
              # Find stats for this peer
              peer_stat = next((s for s in stats if s.public_key == client.public_key), None)
-             if peer_stat:
+             if peer_stat and peer_stat.latest_handshake > 0:
                  last_seen = get_time_ago(peer_stat.latest_handshake)
         except Exception as e:
              logger.error(f"Failed to get handshake: {e}")
              
         text = (
-            f"👤 **Клиент**: `{client.name}`\n"
+            f"👤 **Client**: `{client.name}`\n"
             f"📡 **IP**: `{client.address}`\n"
-            f"⏱ **Последний вход**: `{last_seen}`\n\n"
-            "Выберите тип отчета:"
+            f"⏱ **Last Seen**: `{last_seen}`\n\n"
+            "Select report type:"
         )
 
     # Menu for selected target
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📈 Динамика (24ч)", callback_data=f"stats_view:24h:{target}"),
-         InlineKeyboardButton(text="📈 Динамика (7д)", callback_data=f"stats_view:7d:{target}")],
-        [InlineKeyboardButton(text="📅 Суточный профиль", callback_data=f"stats_view:daily:{target}"),
-         InlineKeyboardButton(text="📆 Недельный профиль", callback_data=f"stats_view:weekly:{target}")],
-        [InlineKeyboardButton(text="🔙 Назад", callback_data="stats_back")]
+        [InlineKeyboardButton(text="📈 Dynamics (24h)", callback_data=f"stats_view:24h:{target}"),
+         InlineKeyboardButton(text="📈 Dynamics (7d)", callback_data=f"stats_view:7d:{target}")],
+        [InlineKeyboardButton(text="📅 Custom Range...", callback_data=f"stats_view:custom:{target}")],
+        [InlineKeyboardButton(text="🕒 Hourly Profile", callback_data=f"stats_view:daily:{target}"),
+         InlineKeyboardButton(text="🗓 Weekly Profile", callback_data=f"stats_view:weekly:{target}")],
+        [InlineKeyboardButton(text="🔙 Back", callback_data="stats_back")]
     ])
     
     await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
 
 @router.callback_query(F.data.startswith("stats_view:"))
-async def process_stats_view(callback: CallbackQuery):
+async def process_stats_view(callback: CallbackQuery, state: FSMContext):
     """Generate and show specific chart."""
     _, action, target = callback.data.split(":")
     
-    # Resolve client_id
+    # Check for Custom Range Action first
+    if action == "custom":
+        await state.set_state(VPNStates.waiting_for_stats_start)
+        await state.update_data(target_client=target)
+        await callback.message.answer(
+            "📅 **Custom Date Range**\n\n"
+            "Please enter the **Start Date** (YYYY-MM-DD).\n"
+            "Example: `2024-01-01`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+        await callback.answer()
+        return
+
+    # Normal charts
     client_id = None
-    target_name = "Все клиенты"
+    target_name = "All Clients"
     
     if target != "ALL":
         client = await _db.get_client_by_name(target)
@@ -615,7 +636,7 @@ async def process_stats_view(callback: CallbackQuery):
             client_id = client.id
             target_name = client.name
         else:
-             await callback.answer("Клиент не найден", show_alert=True)
+             await callback.answer("Client not found", show_alert=True)
              return
 
     filename = "stats.png"
@@ -623,27 +644,27 @@ async def process_stats_view(callback: CallbackQuery):
     caption = ""
 
     try:
-        await callback.message.edit_text("⏳ Генерирую график...")
+        await callback.message.edit_text("⏳ Generating chart...")
         
         if action == "24h":
             data = await _db.get_traffic_series(days=1, client_id=client_id)
-            chart_img = generate_series_chart(data, f"Динамика (24ч): {target_name}")
-            caption = f"📈 **Динамика за 24ч**: {target_name}"
+            chart_img = generate_series_chart(data, f"Traffic History (24h): {target_name}")
+            caption = f"📈 **Dynamics (24h)**: {target_name}"
             
         elif action == "7d":
             data = await _db.get_traffic_series(days=7, client_id=client_id)
-            chart_img = generate_series_chart(data, f"Динамика (7 дней): {target_name}")
-            caption = f"📈 **Динамика за 7 дней**: {target_name}"
+            chart_img = generate_series_chart(data, f"Traffic History (7 days): {target_name}")
+            caption = f"📈 **Dynamics (7 days)**: {target_name}"
             
         elif action == "daily":
             data = await _db.get_hourly_activity(client_id=client_id)
-            chart_img = generate_hourly_chart(data, f"Суточный профиль: {target_name}")
-            caption = f"📅 **Суточный профиль**: {target_name}\n(Средняя активность по часам)"
+            chart_img = generate_hourly_chart(data, f"Hourly Profile: {target_name}")
+            caption = f"🕒 **Hourly Activity Profile**: {target_name}\n(Average traffic by hour of day)"
             
         elif action == "weekly":
             data = await _db.get_weekly_activity(client_id=client_id)
-            chart_img = generate_weekly_chart(data, f"Недельный профиль: {target_name}")
-            caption = f"📆 **Недельный профиль**: {target_name}\n(Активность по дням недели)"
+            chart_img = generate_weekly_chart(data, f"Weekly Profile: {target_name}")
+            caption = f"🗓 **Weekly Activity Profile**: {target_name}\n(Total traffic by day of week)"
             
         elif action == "top":
             # Only for ALL
@@ -655,21 +676,93 @@ async def process_stats_view(callback: CallbackQuery):
             file = BufferedInputFile(chart_img, filename=filename)
             await callback.message.delete()
             await callback.message.answer_photo(file, caption=caption, parse_mode=ParseMode.MARKDOWN)
-            # We lose navigation here because we sent a new photo message
-            # Optionally add a "Back" button to the caption/message?
-            # Telegram doesn't allow inline buttons on Media easily without re-sending keyboard.
-            # But the user can just use /stats again.
         else:
-            await callback.message.edit_text("❌ Нет данных для отображения.")
+            await callback.message.edit_text("❌ No data available for this period.")
             
     except Exception as e:
         logger.exception(f"Stats generation failed: {e}")
         try:
-            await callback.message.edit_text(f"❌ Ошибка: {e}")
+            await callback.message.edit_text(f"❌ Error: {e}")
         except:
-            pass
+             pass
     
     await callback.answer()
+
+
+@router.message(VPNStates.waiting_for_stats_start)
+async def process_stats_start_date(message: Message, state: FSMContext) -> None:
+    """Handle start date input."""
+    date_str = message.text.strip()
+    try:
+        datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        await message.answer("❌ Invalid format! Please use YYYY-MM-DD (e.g., 2024-01-01).")
+        return
+        
+    await state.update_data(start_date=date_str)
+    await state.set_state(VPNStates.waiting_for_stats_end)
+    await message.answer(
+        "📅 **End Date**\n\n"
+        "Please enter the **End Date** (YYYY-MM-DD).\n"
+        "Send `today` to use current date.",
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
+@router.message(VPNStates.waiting_for_stats_end)
+async def process_stats_end_date(message: Message, state: FSMContext) -> None:
+    """Handle end date input and generate chart."""
+    date_str = message.text.strip().lower()
+    data = await state.get_data()
+    start_date = data["start_date"]
+    
+    if date_str == "today":
+        end_date = datetime.now().strftime("%Y-%m-%d")
+    else:
+        try:
+            datetime.strptime(date_str, "%Y-%m-%d")
+            end_date = date_str
+        except ValueError:
+            await message.answer("❌ Invalid format! Please use YYYY-MM-DD or 'today'.")
+            return
+            
+    if start_date > end_date:
+        await message.answer("❌ Start date cannot be after end date!")
+        return
+        
+    # Generate Chart
+    await message.answer("⏳ Generating chart...")
+    
+    try:
+        target = data["target_client"]
+        target_name = "All Clients"
+        client_id = None
+        
+        if target != "ALL":
+             client = await _db.get_client_by_name(target)
+             if client:
+                 client_id = client.id
+                 target_name = client.name
+                 
+        traffic_data = await _db.get_traffic_series_range(start_date, end_date, client_id)
+        
+        chart_img = generate_series_chart(traffic_data, f"Traffic: {start_date} to {end_date}\n{target_name}")
+        
+        if chart_img:
+             file = BufferedInputFile(chart_img, filename="custom_stats.png")
+             await message.answer_photo(
+                 file, 
+                 caption=f"📈 **Custom Range Report**\nPeriod: `{start_date}` - `{end_date}`\nTarget: `{target_name}`",
+                 parse_mode=ParseMode.MARKDOWN
+             )
+        else:
+             await message.answer("❌ No data found for this period.")
+             
+    except Exception as e:
+        logger.exception(f"Custom stats error: {e}")
+        await message.answer(f"❌ Error: {e}")
+    finally:
+        await state.clear()
 
 
 
