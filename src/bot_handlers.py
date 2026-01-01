@@ -313,34 +313,34 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
     await message.answer(
         "🔐 **AmneziaWG VPN Manager**\n\n"
-        "Добро пожаловать! Используйте меню для управления сервером.\n"
-        "Все изменения применяются синхронно и сохраняются.",
+        "Welcome! Use the menu below to manage your server.\n"
+        "All changes are applied synchronously and persisted.",
         reply_markup=main_menu,
         parse_mode=ParseMode.MARKDOWN
     )
 
 
 @router.message(Command("help"))
-@router.message(F.text == "🆘 Помощь")
 @admin_only
 async def cmd_help(message: Message) -> None:
     """Handle /help command."""
     await message.answer(
-        "📖 **Справка по боту**\n\n"
-        "• **Создать клиента**: Запросит имя и выдаст конфиг (QR + файл).\n"
-        "• **Удалить клиента**: Покажет список кнопок для удаления.\n"
-        "• **Статистика**: Показывает графики использования трафика.\n"
-        "• **Список**: Простой текстовый список всех клиентов.\n\n"
-        "Все клиенты автоматически сохраняются в конфигурации сервера.",
+        "📖 **Bot Help**\n\n"
+        "• **Create Client**: Request name and get config (QR + file).\n"
+        "• **Delete Client**: Show buttons to delete clients.\n"
+        "• **Statistics**: Show traffic usage charts.\n"
+        "• **List Clients**: Simple text list of all clients.\n\n"
+        "All clients are automatically saved to server configuration.",
         reply_markup=main_menu,
         parse_mode=ParseMode.MARKDOWN
     )
 
-@router.message(F.text == "👤 Создать клиента")
+
+@router.message(F.text == "👤 Create Client")
 @admin_only
 async def start_create_client(message: Message, state: FSMContext) -> None:
     """Start client creation dialog."""
-    await message.answer("✍️ Введите имя для нового клиента (латиница, цифры, _):", reply_markup=main_menu)
+    await message.answer("✍️ Enter name for new client (latin, numbers, _):", reply_markup=main_menu)
     await state.set_state(VPNStates.waiting_for_client_name)
 
 
@@ -481,7 +481,7 @@ async def process_delete_callback(callback: CallbackQuery):
         
     except Exception as e:
         logger.exception(f"Delete failed: {e}")
-        await callback.answer("Ошибка при удалении", show_alert=True)
+        await callback.answer("Error deleting client", show_alert=True)
 
 
 @router.message(F.text == "📋 List Clients")
@@ -770,5 +770,5 @@ async def process_stats_end_date(message: Message, state: FSMContext) -> None:
 @admin_only
 async def unknown_command(message: Message) -> None:
     """Handle unknown messages."""
-    await message.answer("❓ Неизвестная команда. Используйте меню.", reply_markup=main_menu)
+    await message.answer("❓ Unknown command. Use the menu.", reply_markup=main_menu)
 
