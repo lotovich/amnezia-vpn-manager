@@ -337,7 +337,6 @@ async def cmd_help(message: Message) -> None:
 
 
 @router.message(F.text == "👤 Create Client")
-@router.message(F.text == "👤 Создать клиента")
 @router.message(Command("create"))
 @admin_only
 async def start_create_client(message: Message, state: FSMContext) -> None:
@@ -347,7 +346,6 @@ async def start_create_client(message: Message, state: FSMContext) -> None:
 
 
 @router.message(F.text == "🗑 Delete Client")
-@router.message(F.text == "🗑 Удалить клиента")
 @router.message(Command("delete"))
 @admin_only
 async def cmd_delete(message: Message) -> None:
@@ -366,7 +364,6 @@ async def cmd_delete(message: Message) -> None:
 
 
 @router.message(F.text == "📋 List Clients")
-@router.message(F.text == "📋 Список клиентов")
 @router.message(Command("list"))
 @admin_only
 async def cmd_list(message: Message) -> None:
@@ -385,7 +382,6 @@ async def cmd_list(message: Message) -> None:
 
 
 @router.message(F.text == "📊 Statistics")
-@router.message(F.text == "📊 Статистика")
 @router.message(Command("stats"))
 @admin_only
 async def cmd_stats(message: Message) -> None:
