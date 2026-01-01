@@ -1,7 +1,7 @@
 # AmneziaWG VPN Manager - All-in-One Container
 # Based on Debian with amneziawg-go (userspace implementation)
 
-FROM golang:1.22-bookworm AS awg-builder
+FROM golang:1.24-bookworm AS awg-builder
 
 # Build amneziawg-go from source
 WORKDIR /build
