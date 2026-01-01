@@ -123,7 +123,31 @@ def generate_amnezia_qr_data(
     Generate AmneziaVPN-compatible QR code data.
     Format: vpn://base64(json)
     """
-    # AmneziaVPN expects this JSON structure
+    host = endpoint.split(":")[0]
+    port = int(endpoint.split(":")[1]) if ":" in endpoint else 51820
+
+    # Build the WireGuard config string with AWG parameters
+    wg_config = f"""[Interface]
+Address = {client_address}
+DNS = {dns}
+PrivateKey = {client_private_key}
+Jc = {awg_params.get("Jc", 4)}
+Jmin = {awg_params.get("Jmin", 40)}
+Jmax = {awg_params.get("Jmax", 70)}
+S1 = {awg_params.get("S1", 0)}
+S2 = {awg_params.get("S2", 0)}
+H1 = {awg_params.get("H1", 1)}
+H2 = {awg_params.get("H2", 2)}
+H3 = {awg_params.get("H3", 3)}
+H4 = {awg_params.get("H4", 4)}
+
+[Peer]
+PublicKey = {server_public_key}
+AllowedIPs = 0.0.0.0/0, ::/0
+Endpoint = {endpoint}
+PersistentKeepalive = 25"""
+
+    # AmneziaVPN JSON structure
     config = {
         "containers": [
             {
@@ -137,26 +161,18 @@ def generate_amnezia_qr_data(
                     "Jmin": str(awg_params.get("Jmin", 40)),
                     "S1": str(awg_params.get("S1", 0)),
                     "S2": str(awg_params.get("S2", 0)),
-                    "last_config": f"""[Interface]
-Address = {client_address}
-DNS = {dns}
-PrivateKey = {client_private_key}
-
-[Peer]
-AllowedIPs = 0.0.0.0/0, ::/0
-Endpoint = {endpoint}
-PersistentKeepalive = 25
-PublicKey = {server_public_key}"""
+                    "last_config": wg_config,
+                    "port": str(port),
+                    "transport_proto": "udp"
                 },
                 "container": "amnezia-awg"
             }
         ],
         "defaultContainer": "amnezia-awg",
-        "description": "AmneziaVPN",
+        "description": "AmneziaVPN Server",
         "dns1": dns,
         "dns2": "",
-        "hostName": endpoint.split(":")[0],
-        "port": int(endpoint.split(":")[1]) if ":" in endpoint else 51820
+        "hostName": host
     }
 
     # Encode to base64
