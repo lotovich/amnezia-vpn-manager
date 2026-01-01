@@ -14,15 +14,15 @@ logger = logging.getLogger(__name__)
 # AmneziaWG obfuscation parameters
 # These are defaults that can be overridden via environment variables
 DEFAULT_AWG_PARAMS = {
-    "Jc": 4,      # Junk packet count
-    "Jmin": 40,   # Junk packet minimum size
-    "Jmax": 70,   # Junk packet maximum size
-    "S1": 0,      # Init packet junk size
-    "S2": 0,      # Response packet junk size
-    "H1": 1,      # Init packet magic header
-    "H2": 2,      # Response packet magic header
-    "H3": 3,      # Cookie packet magic header
-    "H4": 4,      # Transport packet magic header
+    "Jc": 2,            # Junk packet count (reduced from 4)
+    "Jmin": 10,         # Junk packet minimum size (reduced from 40)
+    "Jmax": 50,         # Junk packet maximum size (reduced from 70)
+    "S1": 107,          # Init packet junk size
+    "S2": 28,           # Response packet junk size
+    "H1": 1359490391,   # Init packet magic header (random high value)
+    "H2": 1285506284,   # Response packet magic header (random high value)
+    "H3": 1393261750,   # Cookie packet magic header (random high value)
+    "H4": 432419882,    # Transport packet magic header (random high value)
 }
 
 

@@ -48,20 +48,36 @@ fi
 VPN_PORT=${VPN_PORT:-51820}
 VPN_DNS=${VPN_DNS:-1.1.1.1}
 
-# AWG obfuscation parameters (defaults)
-AWG_Jc=${AWG_Jc:-4}
-AWG_Jmin=${AWG_Jmin:-40}
-AWG_Jmax=${AWG_Jmax:-70}
-AWG_S1=${AWG_S1:-0}
-AWG_S2=${AWG_S2:-0}
-AWG_H1=${AWG_H1:-1}
-AWG_H2=${AWG_H2:-2}
-AWG_H3=${AWG_H3:-3}
-AWG_H4=${AWG_H4:-4}
+# AWG obfuscation parameters (defaults based on working server)
+AWG_Jc=${AWG_Jc:-2}
+AWG_Jmin=${AWG_Jmin:-10}
+AWG_Jmax=${AWG_Jmax:-50}
+AWG_S1=${AWG_S1:-107}
+AWG_S2=${AWG_S2:-28}
+AWG_H1=${AWG_H1:-1359490391}
+AWG_H2=${AWG_H2:-1285506284}
+AWG_H3=${AWG_H3:-1393261750}
+AWG_H4=${AWG_H4:-432419882}
 
 log_info "Starting AmneziaWG VPN Manager..."
 log_info "VPN Host: $VPN_HOST"
 log_info "VPN Port: $VPN_PORT"
+
+# Function to update config parameter
+update_param() {
+    local param=$1
+    local value=$2
+    local file=$3
+    
+    if grep -q "^$param =" "$file"; then
+        sed -i "s|^$param = .*|$param = $value|" "$file"
+    else
+        # If parameter missing, add it to Interface section (simplistic approach, assumes Interface is at top)
+        # Better: use proper INI parser or just append if safe, but sed replace is safer for existing params
+        # For simplicity, we warn if missing, as initial config should have had them
+        log_warn "Parameter $param not found in config, could not update."
+    fi
+}
 
 # Create initial server config if not exists
 if [ ! -f "$CONFIG_FILE" ]; then
@@ -86,6 +102,20 @@ H4 = ${AWG_H4}
 EOF
 
     log_info "Server configuration created at $CONFIG_FILE"
+else
+    log_info "Updating existing server configuration with new parameters..."
+    # Force update parameters to match current defaults/env vars
+    # This ensures "broken" config gets fixed on restart
+    update_param "Jc" "${AWG_Jc}" "$CONFIG_FILE"
+    update_param "Jmin" "${AWG_Jmin}" "$CONFIG_FILE"
+    update_param "Jmax" "${AWG_Jmax}" "$CONFIG_FILE"
+    update_param "S1" "${AWG_S1}" "$CONFIG_FILE"
+    update_param "S2" "${AWG_S2}" "$CONFIG_FILE"
+    update_param "H1" "${AWG_H1}" "$CONFIG_FILE"
+    update_param "H2" "${AWG_H2}" "$CONFIG_FILE"
+    update_param "H3" "${AWG_H3}" "$CONFIG_FILE"
+    update_param "H4" "${AWG_H4}" "$CONFIG_FILE"
+    log_info "Server configuration parameters updated."
 fi
 
 # Ensure TUN device exists
