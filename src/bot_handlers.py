@@ -612,6 +612,19 @@ async def process_stats_selection(callback: CallbackQuery):
         # Get total traffic
         total_rx, total_tx = await _db.get_client_total_traffic(client.id)
         
+        # Get Session Info
+        session_text = "None"
+        last_session = await _db.get_last_session(client.id)
+        if last_session:
+            start_dt = datetime.fromisoformat(last_session["start_at"])
+            if last_session["is_active"]:
+                duration = datetime.now() - start_dt
+                session_text = f"Online for {int(duration.total_seconds() // 60)} min"
+            else:
+                end_dt = datetime.fromisoformat(last_session["end_at"])
+                duration = end_dt - start_dt
+                session_text = f"Lasted {int(duration.total_seconds() // 60)} min"
+        
         # Format creation date
         created_at_str = client.created_at.strftime("%Y-%m-%d %H:%M")
 
@@ -620,6 +633,7 @@ async def process_stats_selection(callback: CallbackQuery):
             f"📡 **IP**: `{client.address}`\n"
             f"📅 **Created At**: `{created_at_str}`\n"
             f"⏱ **Last Seen**: `{last_seen}`\n"
+            f"⏳ **Session**: `{session_text}`\n"
             f"📥 **Total Downloaded**: `{format_size(total_rx)}`\n"
             f"📤 **Total Uploaded**: `{format_size(total_tx)}`\n\n"
             "Select report type:"
@@ -627,6 +641,7 @@ async def process_stats_selection(callback: CallbackQuery):
 
     # Menu for selected target
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="⌚ Last Hour", callback_data=f"stats_view:60m:{target}")],
         [InlineKeyboardButton(text="📈 Dynamics (24h)", callback_data=f"stats_view:24h:{target}"),
          InlineKeyboardButton(text="📈 Dynamics (7d)", callback_data=f"stats_view:7d:{target}")],
         [InlineKeyboardButton(text="📅 Custom Range...", callback_data=f"stats_view:custom:{target}")],
@@ -676,7 +691,12 @@ async def process_stats_view(callback: CallbackQuery, state: FSMContext):
     try:
         await callback.message.edit_text("⏳ Generating chart...")
         
-        if action == "24h":
+        if action == "60m":
+            data = await _db.get_minute_traffic_series(client_id=client_id, minutes=60)
+            chart_img = generate_series_chart(data, f"Last Hour Activity: {target_name}")
+            caption = f"⌚ **Last Hour Activity**: {target_name} (per-minute granularity)"
+            
+        elif action == "24h":
             data = await _db.get_traffic_series(days=1, client_id=client_id)
             chart_img = generate_series_chart(data, f"Traffic History (24h): {target_name}")
             caption = f"📈 **Dynamics (24h)**: {target_name}"

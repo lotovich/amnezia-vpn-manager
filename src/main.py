@@ -79,6 +79,28 @@ async def traffic_collector(db: Database, vpn: VPNManager) -> None:
                             f"Traffic for {client.name}: "
                             f"+{delta_rx} bytes RX, +{delta_tx} bytes TX"
                         )
+                    
+                    # --- Session Tracking ---
+                    now = datetime.now()
+                    # A peer is considered "online" if had a handshake within the last 5 minutes
+                    is_online = (time.time() - peer_stats.latest_handshake) < 300 if peer_stats.latest_handshake > 0 else False
+                    
+                    active_session = await db.get_active_session(client.id)
+                    
+                    if is_online and not active_session:
+                        # Start new session
+                        # We use the handshake time as start time if available, otherwise now
+                        start_time = datetime.fromtimestamp(peer_stats.latest_handshake) if peer_stats.latest_handshake > 0 else now
+                        await db.start_session(client.id, start_time)
+                        logger.info(f"Session started for {client.name}")
+                        
+                    elif not is_online and active_session:
+                        # End current session
+                        # Session ends either now or at the time of last suspected activity
+                        # For simplicity, we use the timestamp of the last handshake or current record
+                        end_time = datetime.fromtimestamp(peer_stats.latest_handshake) if peer_stats.latest_handshake > 0 else now
+                        await db.end_session(client.id, end_time)
+                        logger.info(f"Session ended for {client.name}")
 
         except asyncio.CancelledError:
             logger.info("Traffic collector stopped")

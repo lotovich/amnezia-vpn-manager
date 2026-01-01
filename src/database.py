@@ -79,6 +79,18 @@ class Database:
                 )
             """)
 
+            # Sessions table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    client_id INTEGER NOT NULL,
+                    start_at TIMESTAMP NOT NULL,
+                    end_at TIMESTAMP,
+                    is_active BOOLEAN DEFAULT 1,
+                    FOREIGN KEY (client_id) REFERENCES clients(id)
+                )
+            """)
+
             # Index for faster queries
             await db.execute("""
                 CREATE INDEX IF NOT EXISTS idx_traffic_history_client
@@ -87,6 +99,10 @@ class Database:
             await db.execute("""
                 CREATE INDEX IF NOT EXISTS idx_traffic_history_time
                 ON traffic_history(recorded_at)
+            """)
+            await db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_sessions_client
+                ON sessions(client_id)
             """)
 
             await db.commit()
@@ -464,6 +480,74 @@ class Database:
                 params.append(client_id)
                 
             query += " GROUP BY weekday ORDER BY weekday"
+            
+            async with db.execute(query, tuple(params)) as cursor:
+                return [dict(row) for row in await cursor.fetchall()]
+
+    # --- Session Management ---
+
+    async def get_active_session(self, client_id: int) -> Optional[dict]:
+        """Get the currently active session for a client."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM sessions WHERE client_id = ? AND is_active = 1 LIMIT 1",
+                (client_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+    async def start_session(self, client_id: int, start_at: datetime) -> None:
+        """Create a new active session."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT INTO sessions (client_id, start_at, is_active) VALUES (?, ?, 1)",
+                (client_id, start_at.isoformat())
+            )
+            await db.commit()
+
+    async def end_session(self, client_id: int, end_at: datetime) -> None:
+        """Close the active session for a client."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "UPDATE sessions SET end_at = ?, is_active = 0 WHERE client_id = ? AND is_active = 1",
+                (end_at.isoformat(), client_id)
+            )
+            await db.commit()
+
+    async def get_last_session(self, client_id: int) -> Optional[dict]:
+        """Get the most recently completed or currently active session."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM sessions WHERE client_id = ? ORDER BY start_at DESC LIMIT 1",
+                (client_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+    async def get_minute_traffic_series(self, client_id: Optional[int] = None, minutes: int = 60) -> list[dict]:
+        """
+        Get traffic history grouped by minute for the last N minutes.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            
+            query = """
+                SELECT 
+                    strftime('%Y-%m-%d %H:%M:00', recorded_at) as ts,
+                    SUM(bytes_received) as rx,
+                    SUM(bytes_sent) as tx
+                FROM traffic_history
+                WHERE recorded_at >= datetime('now', ?)
+            """
+            params = [f"-{minutes} minutes"]
+            
+            if client_id:
+                query += " AND client_id = ?"
+                params.append(client_id)
+                
+            query += " GROUP BY ts ORDER BY ts"
             
             async with db.execute(query, tuple(params)) as cursor:
                 return [dict(row) for row in await cursor.fetchall()]
