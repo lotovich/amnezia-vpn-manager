@@ -303,7 +303,7 @@ def setup_handlers(db: Database, vpn: VPNManager) -> Router:
     return router
 
 
-@router.message(CommandStart())
+@router.message(CommandStart(), StateFilter("*"))
 @admin_only
 async def cmd_start(message: Message, state: FSMContext) -> None:
     """Handle /start command - show main menu."""
@@ -317,7 +317,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(Command("help"))
+@router.message(Command("help"), StateFilter("*"))
 @admin_only
 async def cmd_help(message: Message) -> None:
     """Handle /help command."""
@@ -333,13 +333,19 @@ async def cmd_help(message: Message) -> None:
     )
 
 
-@router.message(F.text == "👤 Create Client")
-@router.message(Command("create"))
+@router.message(F.text.contains("Create Client"), StateFilter("*"))
+@router.message(Command("create"), StateFilter("*"))
 @admin_only
 async def start_create_client(message: Message, state: FSMContext) -> None:
     """Start client creation dialog."""
-    await message.answer("✍️ Enter name for new client (latin, numbers, _):", reply_markup=main_menu)
-    await state.set_state(VPNStates.waiting_for_client_name)
+    try:
+        await state.clear() # Clear state just in case
+        await message.answer("✍️ Enter name for new client (latin, numbers, _):", reply_markup=main_menu)
+        await state.set_state(VPNStates.waiting_for_client_name)
+        logger.info(f"FSM state set to waiting_for_client_name for user {message.from_user.id}")
+    except Exception as e:
+        logger.exception(f"Error in start_create_client: {e}")
+        await message.answer("❌ Internal error. Please try /start again.")
 
 
 
@@ -438,8 +444,8 @@ async def process_create_client(message: Message, state: FSMContext) -> None:
         await state.clear()
 
 
-@router.message(F.text == "🗑 Delete Client")
-@router.message(Command("delete"))
+@router.message(F.text == "🗑 Delete Client", StateFilter("*"))
+@router.message(Command("delete"), StateFilter("*"))
 @admin_only
 async def cmd_delete(message: Message) -> None:
     """Show client deletion menu."""
@@ -486,8 +492,8 @@ async def process_delete_callback(callback: CallbackQuery):
         await callback.answer("Error deleting client", show_alert=True)
 
 
-@router.message(F.text == "📋 List Clients")
-@router.message(Command("list"))
+@router.message(F.text == "📋 List Clients", StateFilter("*"))
+@router.message(Command("list"), StateFilter("*"))
 @admin_only
 async def cmd_list(message: Message) -> None:
     """List all clients."""
@@ -551,8 +557,8 @@ async def show_stats_root(message: Message, edit: bool = False) -> None:
         await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
 
-@router.message(F.text == "📊 Statistics")
-@router.message(Command("stats"))
+@router.message(F.text == "📊 Statistics", StateFilter("*"))
+@router.message(Command("stats"), StateFilter("*"))
 @admin_only
 async def cmd_stats(message: Message) -> None:
     """Show traffic statistics menu."""
@@ -768,9 +774,14 @@ async def process_stats_end_date(message: Message, state: FSMContext) -> None:
 
 
 
-@router.message(F.text)
+@router.message(F.text, StateFilter("*"))
 @admin_only
 async def unknown_command(message: Message) -> None:
     """Handle unknown messages."""
-    await message.answer("❓ Unknown command. Use the menu.", reply_markup=main_menu)
+    logger.warning(f"Unknown command from user {message.from_user.id}: {message.text}")
+    await message.answer(
+        f"❓ Unknown command: `{message.text}`\n\nPlease use the menu below:",
+        reply_markup=main_menu,
+        parse_mode=ParseMode.MARKDOWN
+    )
 
