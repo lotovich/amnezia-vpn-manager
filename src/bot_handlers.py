@@ -333,19 +333,31 @@ async def cmd_help(message: Message) -> None:
     )
 
 
-@router.message(F.text.contains("Create Client"), StateFilter("*"))
+@router.message(F.text.contains("Create Client"))
 @router.message(Command("create"), StateFilter("*"))
 @admin_only
 async def start_create_client(message: Message, state: FSMContext) -> None:
     """Start client creation dialog."""
     try:
-        await state.clear() # Clear state just in case
-        await message.answer("✍️ Enter name for new client (latin, numbers, _):", reply_markup=main_menu)
+        # Check if user object exists
+        if not message.from_user:
+            await message.answer("❌ Error: Cannot identify user.")
+            return
+
+        # Set the state - this is the core FSM action
         await state.set_state(VPNStates.waiting_for_client_name)
-        logger.info(f"FSM state set to waiting_for_client_name for user {message.from_user.id}")
+        
+        await message.answer(
+            "✍️ **Creating New Client**\n\n"
+            "Please enter a name for the new client.\n"
+            "Use only letters, numbers, and underscores.",
+            reply_markup=main_menu,
+            parse_mode=ParseMode.MARKDOWN
+        )
+        logger.info(f"User {message.from_user.id} started client creation (state set)")
     except Exception as e:
-        logger.exception(f"Error in start_create_client: {e}")
-        await message.answer("❌ Internal error. Please try /start again.")
+        logger.error(f"start_create_client error: {str(e)}", exc_info=True)
+        await message.answer(f"❌ Critical error: `{type(e).__name__}: {str(e)}`")
 
 
 
