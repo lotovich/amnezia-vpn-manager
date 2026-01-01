@@ -308,6 +308,13 @@ async def cmd_create(message: Message) -> None:
             caption="📱 Scan this QR code with AmneziaVPN app"
         )
 
+        # Send text key for copy-paste (for AmneziaVPN import)
+        await message.answer(
+            f"🔑 **Connection key** (tap to copy):\n\n"
+            f"`{qr_data}`",
+            parse_mode=ParseMode.MARKDOWN
+        )
+
         logger.info(f"Created client: {client_name} with IP {client_ip}")
 
     except Exception as e:
