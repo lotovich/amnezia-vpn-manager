@@ -8,7 +8,9 @@ import json
 import logging
 import os
 import re
+import struct
 import time
+import zlib
 from functools import wraps
 from typing import Callable, Any
 
@@ -97,11 +99,10 @@ def generate_qr_code(data: str) -> bytes:
     qr = qrcode.QRCode(
         version=None,  # Auto-size based on data
         error_correction=qrcode.constants.ERROR_CORRECT_L,  # Low for max capacity
-        box_size=4,
-        border=2,
+        box_size=5,
+        border=4,
     )
-    # Use binary mode for proper encoding
-    qr.add_data(data.encode('utf-8'), optimize=0)
+    qr.add_data(data)
     qr.make(fit=True)
 
     img = qr.make_image(fill_color="black", back_color="white")
@@ -176,9 +177,24 @@ PersistentKeepalive = 25"""
         "hostName": host
     }
 
-    # Encode to base64
-    json_str = json.dumps(config, separators=(',', ':'))
-    b64_data = base64.b64encode(json_str.encode()).decode()
+    # Encode using AmneziaVPN format:
+    # 1. JSON with 4-space indent
+    # 2. Compress with zlib
+    # 3. Prepend 4-byte length header (big-endian)
+    # 4. URL-safe base64 encode
+    json_str = json.dumps(config, indent=4)
+    json_bytes = json_str.encode('utf-8')
+    original_length = len(json_bytes)
+
+    # Compress
+    compressed = zlib.compress(json_bytes)
+
+    # Add 4-byte header with original length
+    header = struct.pack('>I', original_length)
+    data_with_header = header + compressed
+
+    # URL-safe base64 (no padding)
+    b64_data = base64.urlsafe_b64encode(data_with_header).decode().rstrip('=')
 
     return f"vpn://{b64_data}"
 
