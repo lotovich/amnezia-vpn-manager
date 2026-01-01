@@ -153,7 +153,32 @@ AllowedIPs = 0.0.0.0/0, ::/0
 Endpoint = {endpoint}
 PersistentKeepalive = 25"""
 
-    # AmneziaVPN JSON structure
+    # Build last_config JSON string (nested config)
+    # This must be a JSON string containing the full config and fields
+    last_config_data = {
+        "H1": str(awg_params.get("H1", 1)),
+        "H2": str(awg_params.get("H2", 2)),
+        "H3": str(awg_params.get("H3", 3)),
+        "H4": str(awg_params.get("H4", 4)),
+        "Jc": str(awg_params.get("Jc", 4)),
+        "Jmax": str(awg_params.get("Jmax", 70)),
+        "Jmin": str(awg_params.get("Jmin", 40)),
+        "S1": str(awg_params.get("S1", 0)),
+        "S2": str(awg_params.get("S2", 0)),
+        "allowed_ips": ["0.0.0.0/0", "::/0"],
+        "client_ip": client_address.split('/')[0],
+        "client_priv_key": client_private_key,
+        "config": wg_config,  # The INI config goes here
+        "hostName": host,
+        "mtu": "1280",
+        "persistent_keep_alive": "25",
+        "port": port,
+        "server_pub_key": server_public_key,
+        "transport_proto": "udp"
+    }
+    last_config_str = json.dumps(last_config_data)
+
+    # AmneziaVPN main JSON structure
     config = {
         "containers": [
             {
@@ -167,7 +192,7 @@ PersistentKeepalive = 25"""
                     "Jmin": str(awg_params.get("Jmin", 40)),
                     "S1": str(awg_params.get("S1", 0)),
                     "S2": str(awg_params.get("S2", 0)),
-                    "last_config": wg_config,
+                    "last_config": last_config_str,
                     "port": str(port),
                     "transport_proto": "udp"
                 },
@@ -181,26 +206,34 @@ PersistentKeepalive = 25"""
         "hostName": host
     }
 
-    # Encode using AmneziaVPN format:
-    # 1. JSON with 4-space indent
+    # Encode using AmneziaVPN format (12-byte header):
+    # 1. JSON
     # 2. Compress with zlib
-    # 3. Prepend 4-byte length header (big-endian)
-    # 4. URL-safe base64 encode
-    json_str = json.dumps(config, indent=4)
+    # 3. Header: Magic(4) + TotalRemaining(4) + UncompressedLen(4)
+    # Magic = 0x07c00100
+    
+    json_str = json.dumps(config)  # Compact JSON
     json_bytes = json_str.encode('utf-8')
-    original_length = len(json_bytes)
+    uncompressed_len = len(json_bytes)
 
     # Compress
     compressed = zlib.compress(json_bytes)
-
-    # Add 4-byte header with original length
-    header = struct.pack('>I', original_length)
+    
+    # Header format:
+    # Magic Bytes: 07 c0 01 00
+    # Total Remaining Length (4 bytes) = 4 bytes (UncompressedLen field) + len(compressed)
+    # Uncompressed Length (4 bytes)
+    magic = b'\x07\xc0\x01\x00'
+    total_remaining_len = 4 + len(compressed)
+    
+    header = magic + struct.pack('>I', total_remaining_len) + struct.pack('>I', uncompressed_len)
     data_with_header = header + compressed
 
     # URL-safe base64 (no padding)
     b64_data = base64.urlsafe_b64encode(data_with_header).decode().rstrip('=')
 
-    return f"vpn://{b64_data}"
+    # Return raw Base64 for QR code (no prefix)
+    return b64_data
 
 
 # Store references to shared objects (set from main.py)
@@ -296,13 +329,9 @@ async def cmd_create(message: Message) -> None:
             client_address=client_ip
         )
 
-        # Generate QR code with NATIVE WireGuard .conf format
-        # This works reliably with AmneziaWG app (used in amnezia-wg-easy)
-        qr_image = generate_qr_code(config)
-        
-        # Also generate vpn:// string for AmneziaVPN app
+        # Generate AmneziaVPN-compatible QR code data (Raw Base64)
         endpoint = f"{_vpn.vpn_host}:{_vpn.vpn_port}"
-        qr_data = generate_amnezia_qr_data(
+        qr_data_base64 = generate_amnezia_qr_data(
             client_private_key=keypair.private_key,
             client_address=client_ip,
             server_public_key=_vpn.server_public_key,
@@ -311,10 +340,13 @@ async def cmd_create(message: Message) -> None:
             awg_params=_vpn.awg_params
         )
 
+        # Generate QR code image from Raw Base64 (Amnezia format)
+        qr_image = generate_qr_code(qr_data_base64)
+        
         # Delete status message
         await status_msg.delete()
 
-        # Send config file
+        # Send config file (Native .conf)
         config_file = BufferedInputFile(
             config.encode(),
             filename=f"{client_name}.conf"
@@ -325,24 +357,18 @@ async def cmd_create(message: Message) -> None:
             parse_mode=ParseMode.MARKDOWN
         )
 
-        # Send QR code with native .conf format (works with AmneziaWG)
+        # Send QR code as photo (Raw Base64 data)
         qr_photo = BufferedInputFile(qr_image, filename=f"{client_name}_qr.png")
         await message.answer_photo(
             qr_photo,
-            caption="📱 Scan with AmneziaWG app (native WireGuard format)"
+            caption="📱 Scan with AmneziaVPN app"
         )
         
-        # Also send QR code as document (full quality)
-        qr_file = BufferedInputFile(qr_image, filename=f"{client_name}_qr.png")
-        await message.answer_document(
-            qr_file,
-            caption="📁 QR code (native .conf format)"
-        )
-
-        # Send vpn:// key for AmneziaVPN app (copy-paste)
+        # Send text key with vpn:// prefix (copy-paste)
+        vpn_link = f"vpn://{qr_data_base64}"
         await message.answer(
             f"🔑 **For AmneziaVPN app** (tap to copy):\n\n"
-            f"`{qr_data}`",
+            f"`{vpn_link}`",
             parse_mode=ParseMode.MARKDOWN
         )
 
