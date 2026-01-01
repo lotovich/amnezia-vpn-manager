@@ -29,7 +29,10 @@ from aiogram.fsm.state import State, StatesGroup
 
 from database import Database
 from vpn_manager import VPNManager
-from stats_viz import generate_traffic_chart, generate_stats_summary
+from stats_viz import (
+    generate_traffic_chart, generate_stats_summary,
+    generate_series_chart, generate_hourly_chart, generate_weekly_chart
+)
 
 
 class VPNStates(StatesGroup):
@@ -496,27 +499,66 @@ async def cmd_list(message: Message) -> None:
 @router.message(Command("stats"))
 @admin_only
 async def cmd_stats(message: Message) -> None:
-    """Show traffic statistics."""
+    """Show detailed traffic statistics menu."""
+    stats_keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📈 Динамика (24ч)", callback_data="stats:24h")],
+        [InlineKeyboardButton(text="📅 По часам (Сутки)", callback_data="stats:daily"),
+         InlineKeyboardButton(text="📆 По дням недели", callback_data="stats:weekly")],
+        [InlineKeyboardButton(text="👥 Топ пользователей", callback_data="stats:top")]
+    ])
+    await message.answer("📊 Выберите тип статистики:", reply_markup=stats_keyboard)
+
+
+@router.callback_query(F.data.startswith("stats:"))
+async def process_stats_callback(callback: CallbackQuery):
+    """Handle statistics menu callbacks."""
+    action = callback.data.split(":")[1]
+    chart_img = None
+    caption = ""
+    filename = "stats.png"
+
     try:
-        traffic_data = await _db.get_total_traffic_by_client()
+        # Indicate loading
+        await callback.message.edit_text("⏳ Генерирую график...")
+        
+        if action == "24h":
+            data = await _db.get_traffic_series(days=1)
+            chart_img = generate_series_chart(data, "Трафик за последние 24 часа")
+            caption = "📈 **Динамика загрузки и отдачи за сутки**"
+            
+        elif action == "daily":
+            data = await _db.get_hourly_activity()
+            chart_img = generate_hourly_chart(data, "Средняя активность по часам")
+            caption = "📅 **Профиль нагрузки по времени суток (0-23)**"
+            
+        elif action == "weekly":
+            data = await _db.get_weekly_activity()
+            chart_img = generate_weekly_chart(data, "Активность по дням недели")
+            caption = "📆 **Нагрузка по дням недели**"
+            
+        elif action == "top":
+            data = await _db.get_total_traffic_by_client()
+            chart_img = generate_traffic_chart(data)
+            caption = generate_stats_summary(data)
 
-        if not traffic_data:
-            await message.answer("📊 Нет данных о трафике.")
-            return
-
-        # Generate visual chart
-        chart_image = generate_traffic_chart(traffic_data)
-        summary = generate_stats_summary(traffic_data)
-
-        if chart_image:
-            chart_file = BufferedInputFile(chart_image, filename="traffic_stats.png")
-            await message.answer_photo(chart_file, caption=summary, parse_mode=ParseMode.MARKDOWN)
+        if chart_img:
+            file = BufferedInputFile(chart_img, filename=filename)
+            # Delete "Generate..." message and send photo (edit_media is cleaner but requires InputMediaPhoto)
+            await callback.message.delete()
+            await callback.message.answer_photo(file, caption=caption, parse_mode=ParseMode.MARKDOWN)
         else:
-            await message.answer(summary, parse_mode=ParseMode.MARKDOWN)
-
+            await callback.message.edit_text("❌ Нет данных для отображения.")
+            
     except Exception as e:
-        logger.exception(f"Stats error: {e}")
-        await message.answer(f"❌ Ошибка статистики: {e}")
+        logger.exception(f"Stats generation failed: {e}")
+        # Try to edit message if possible
+        try:
+            await callback.message.edit_text(f"❌ Ошибка: {e}")
+        except:
+            await callback.message.answer(f"❌ Ошибка: {e}")
+    
+    await callback.answer()
+
 
 
 @router.message(F.text)

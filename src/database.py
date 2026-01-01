@@ -338,3 +338,82 @@ class Database:
                 (name,)
             ) as cursor:
                 return await cursor.fetchone() is not None
+    async def get_traffic_series(self, days: int = 1, client_id: Optional[int] = None) -> list[dict]:
+        """
+        Get traffic history grouped by hour for the last N days.
+        Returns list of {timestamp, rx, tx}.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            
+            # Format time to hour precision
+            query = """
+                SELECT 
+                    strftime('%Y-%m-%d %H:00:00', recorded_at) as ts,
+                    SUM(bytes_received) as rx,
+                    SUM(bytes_sent) as tx
+                FROM traffic_history
+                WHERE recorded_at >= datetime('now', ?)
+            """
+            params = [f"-{days} days"]
+            
+            if client_id:
+                query += " AND client_id = ?"
+                params.append(client_id)
+                
+            query += " GROUP BY ts ORDER BY ts"
+            
+            async with db.execute(query, tuple(params)) as cursor:
+                return [dict(row) for row in await cursor.fetchall()]
+
+    async def get_hourly_activity(self, client_id: Optional[int] = None) -> list[dict]:
+        """
+        Get average traffic volume aggregated by hour of day (0-23).
+        Returns list of {hour, total_bytes}.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            
+            query = """
+                SELECT 
+                    cast(strftime('%H', recorded_at) as int) as hour,
+                    AVG(bytes_received + bytes_sent) as avg_bytes,
+                    SUM(bytes_received + bytes_sent) as total_bytes
+                FROM traffic_history
+            """
+            params = []
+            
+            if client_id:
+                query += " WHERE client_id = ?"
+                params.append(client_id)
+                
+            query += " GROUP BY hour ORDER BY hour"
+            
+            async with db.execute(query, tuple(params)) as cursor:
+                return [dict(row) for row in await cursor.fetchall()]
+
+    async def get_weekly_activity(self, client_id: Optional[int] = None) -> list[dict]:
+        """
+        Get traffic volume aggregated by day of week (0=Sunday, 6=Saturday).
+        Returns list of {weekday, total_bytes}.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            
+            # strftime %w gives 0-6 (Sunday-Saturday)
+            query = """
+                SELECT 
+                    cast(strftime('%w', recorded_at) as int) as weekday,
+                    SUM(bytes_received + bytes_sent) as total_bytes
+                FROM traffic_history
+            """
+            params = []
+            
+            if client_id:
+                query += " WHERE client_id = ?"
+                params.append(client_id)
+                
+            query += " GROUP BY weekday ORDER BY weekday"
+            
+            async with db.execute(query, tuple(params)) as cursor:
+                return [dict(row) for row in await cursor.fetchall()]
