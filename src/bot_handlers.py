@@ -337,12 +337,61 @@ async def cmd_help(message: Message) -> None:
 
 
 @router.message(F.text == "👤 Create Client")
+@router.message(F.text == "👤 Создать клиента")
 @router.message(Command("create"))
 @admin_only
 async def start_create_client(message: Message, state: FSMContext) -> None:
     """Start client creation dialog."""
     await message.answer("✍️ Enter name for new client (latin, numbers, _):", reply_markup=main_menu)
     await state.set_state(VPNStates.waiting_for_client_name)
+
+
+@router.message(F.text == "🗑 Delete Client")
+@router.message(F.text == "🗑 Удалить клиента")
+@router.message(Command("delete"))
+@admin_only
+async def cmd_delete(message: Message) -> None:
+    """Show client deletion menu."""
+    clients = await _db.get_all_clients()
+    if not clients:
+        await message.answer("ℹ️ No clients to delete.")
+        return
+
+    # Create inline keyboard with clients
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=f"❌ {c.name}", callback_data=f"del:{c.name}")]
+        for c in clients
+    ])
+    await message.answer("🗑 **Select client to delete:**\nWarning: This action cannot be undone!", reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+
+
+@router.message(F.text == "📋 List Clients")
+@router.message(F.text == "📋 Список клиентов")
+@router.message(Command("list"))
+@admin_only
+async def cmd_list(message: Message) -> None:
+    """List all clients."""
+    clients = await _db.get_all_clients()
+    
+    if not clients:
+        await message.answer("ℹ️ No active clients.")
+        return
+
+    text = "📋 **Active Clients:**\n\n"
+    for c in clients:
+        text += f"🔹 `{c.name}` ({c.address})\n"
+    
+    await message.answer(text, parse_mode=ParseMode.MARKDOWN)
+
+
+@router.message(F.text == "📊 Statistics")
+@router.message(F.text == "📊 Статистика")
+@router.message(Command("stats"))
+@admin_only
+async def cmd_stats(message: Message) -> None:
+    """Show traffic statistics menu."""
+    await show_stats_root(message)
+
 
 
 @router.message(VPNStates.waiting_for_client_name)
