@@ -301,20 +301,40 @@ class Database:
         return result
 
     async def delete_client(self, name: str) -> bool:
-        """Soft-delete a client (mark as inactive)."""
+        """Delete a client completely (hard delete)."""
         async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute(
-                "UPDATE clients SET is_active = 0 WHERE name = ?",
-                (name,)
+            # Get client ID first
+            async with db.execute(
+                "SELECT id FROM clients WHERE name = ?", (name,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    return False
+                client_id = row[0]
+
+            # Delete traffic history
+            await db.execute(
+                "DELETE FROM traffic_history WHERE client_id = ?",
+                (client_id,)
+            )
+            # Delete traffic counters
+            await db.execute(
+                "DELETE FROM traffic_counters WHERE client_id = ?",
+                (client_id,)
+            )
+            # Delete client
+            await db.execute(
+                "DELETE FROM clients WHERE id = ?",
+                (client_id,)
             )
             await db.commit()
-            return cursor.rowcount > 0
+            return True
 
     async def client_exists(self, name: str) -> bool:
         """Check if client with given name exists."""
         async with aiosqlite.connect(self.db_path) as db:
             async with db.execute(
-                "SELECT 1 FROM clients WHERE name = ? AND is_active = 1",
+                "SELECT 1 FROM clients WHERE name = ?",
                 (name,)
             ) as cursor:
                 return await cursor.fetchone() is not None

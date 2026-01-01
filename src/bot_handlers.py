@@ -96,11 +96,12 @@ def generate_qr_code(data: str) -> bytes:
     """Generate QR code image from data string."""
     qr = qrcode.QRCode(
         version=None,  # Auto-size based on data
-        error_correction=qrcode.constants.ERROR_CORRECT_M,  # Medium error correction
-        box_size=6,  # Smaller boxes for larger data
+        error_correction=qrcode.constants.ERROR_CORRECT_L,  # Low for max capacity
+        box_size=4,
         border=2,
     )
-    qr.add_data(data)
+    # Use binary mode for proper encoding
+    qr.add_data(data.encode('utf-8'), optimize=0)
     qr.make(fit=True)
 
     img = qr.make_image(fill_color="black", back_color="white")
