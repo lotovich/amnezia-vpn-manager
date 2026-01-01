@@ -259,6 +259,7 @@ _vpn: VPNManager = None
 # States for FSM
 class VPNStates(StatesGroup):
     waiting_for_client_name = State()
+    waiting_for_app_type = State()
     waiting_for_stats_start = State()
     waiting_for_stats_end = State()
 
@@ -368,7 +369,7 @@ async def start_create_client(message: Message, state: FSMContext) -> None:
 @router.message(VPNStates.waiting_for_client_name)
 @admin_only
 async def process_create_client(message: Message, state: FSMContext) -> None:
-    """Process client name and create VPN config."""
+    """Process client name and ask for app type."""
     client_name = message.text.strip()
 
     # Validate name
@@ -382,8 +383,37 @@ async def process_create_client(message: Message, state: FSMContext) -> None:
         await message.answer(f"❌ Client `{client_name}` already exists! Please enter a different name:", parse_mode=ParseMode.MARKDOWN)
         return
 
+    # Store name and ask for app type
+    await state.update_data(client_name=client_name)
+    await state.set_state(VPNStates.waiting_for_app_type)
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📱 Amnezia VPN", callback_data="app_type:amnezia_vpn")],
+        [InlineKeyboardButton(text="🔐 AmneziaWG", callback_data="app_type:amnezia_wg")]
+    ])
+
+    await message.answer(
+        f"📱 **Select App Type for `{client_name}`**\n\n"
+        "Choose which app you will use to connect. This determines the QR code format:",
+        reply_markup=keyboard,
+        parse_mode=ParseMode.MARKDOWN
+    )
+
+
+@router.callback_query(F.data.startswith("app_type:"), StateFilter(VPNStates.waiting_for_app_type))
+async def process_app_type_callback(callback: CallbackQuery, state: FSMContext):
+    """Perform actual client creation based on selected app type."""
+    app_type = callback.data.split(":")[1]
+    data = await state.get_data()
+    client_name = data.get("client_name")
+    
+    if not client_name:
+        await callback.answer("Error: Client name lost. Please try again.", show_alert=True)
+        await state.clear()
+        return
+
     try:
-        status_msg = await message.answer("⏳ Creating client and synchronizing server...")
+        await callback.message.edit_text(f"⏳ Creating client `{client_name}` for {app_type}...")
 
         # Generate keys and IP
         keypair = await _vpn.generate_keypair()
@@ -397,63 +427,72 @@ async def process_create_client(message: Message, state: FSMContext) -> None:
             address=client_ip
         )
 
-        # FULL SYNC: Update server config file and allow interface to reload
-        # This ensures persistence and "real" update
+        # FULL SYNC
         await full_sync_server()
 
-        # Generate client config (for user)
-        config = _vpn.generate_client_config(
+        # Generate client config text
+        config_text = _vpn.generate_client_config(
             client_private_key=keypair.private_key,
             client_address=client_ip
         )
 
-        # Generate AmneziaVPN QR data (Raw Base64)
-        endpoint = f"{_vpn.vpn_host}:{_vpn.vpn_port}"
-        qr_data_base64 = generate_amnezia_qr_data(
-            client_private_key=keypair.private_key,
-            client_address=client_ip,
-            server_public_key=_vpn.server_public_key,
-            endpoint=endpoint,
-            dns=_vpn.dns,
-            awg_params=_vpn.awg_params
-        )
+        qr_image = None
+        qr_data_text = ""
 
-        # Generate QR image
-        qr_image = generate_qr_code(qr_data_base64)
-        
-        await status_msg.delete()
+        if app_type == "amnezia_vpn":
+            # JSON format
+            endpoint = f"{_vpn.vpn_host}:{_vpn.vpn_port}"
+            qr_data_base64 = generate_amnezia_qr_data(
+                client_private_key=keypair.private_key,
+                client_address=client_ip,
+                server_public_key=_vpn.server_public_key,
+                endpoint=endpoint,
+                dns=_vpn.dns,
+                awg_params=_vpn.awg_params
+            )
+            qr_image = generate_qr_code(qr_data_base64)
+            qr_data_text = f"vpn://{qr_data_base64}"
+        else:
+            # AmneziaWG / Standard format: raw config text
+            qr_image = generate_qr_code(config_text)
+            qr_data_text = config_text
 
-        # Send Config File
-        config_file = BufferedInputFile(config.encode(), filename=f"{client_name}.conf")
-        await message.answer_document(
+        # Send File
+        config_file = BufferedInputFile(config_text.encode(), filename=f"{client_name}.conf")
+        await callback.message.answer_document(
             config_file,
-            caption=f"✅ Client `{client_name}` created successfully!\nIP: `{client_ip}`",
+            caption=f"✅ Client `{client_name}` created for **{app_type}**.\nIP: `{client_ip}`",
             parse_mode=ParseMode.MARKDOWN
         )
 
         # Send QR Photo
         qr_photo = BufferedInputFile(qr_image, filename=f"{client_name}_qr.png")
-        await message.answer_photo(
+        await callback.message.answer_photo(
             qr_photo,
-            caption="📱 QR code for AmneziaVPN",
+            caption=f"📱 QR code for **{app_type}**",
             reply_markup=main_menu
         )
         
         # Send Text Key
-        vpn_link = f"vpn://{qr_data_base64}"
-        await message.answer(
-            f"🔑 **Key for AmneziaVPN** (tap to copy):\n\n`{vpn_link}`",
-            parse_mode=ParseMode.MARKDOWN
-        )
+        if app_type == "amnezia_vpn":
+            await callback.message.answer(
+                f"🔑 **Key for Amnezia VPN** (tap to copy):\n\n`{qr_data_text}`",
+                parse_mode=ParseMode.MARKDOWN
+            )
+        else:
+            await callback.message.answer(
+                "📝 **Config Text** (for manual copy):\n\n"
+                f"```ini\n{qr_data_text}\n```",
+                parse_mode=ParseMode.MARKDOWN
+            )
 
-        logger.info(f"Created client: {client_name} ({client_ip})")
-        
-        # Reset state
+        await callback.message.delete()
+        logger.info(f"Created client: {client_name} ({client_ip}) for {app_type}")
         await state.clear()
         
     except Exception as e:
         logger.exception(f"Failed to create client: {e}")
-        await message.answer(f"❌ Error creating client: {e}", reply_markup=main_menu)
+        await callback.message.answer(f"❌ Error creating client: {e}", reply_markup=main_menu)
         await state.clear()
 
 
