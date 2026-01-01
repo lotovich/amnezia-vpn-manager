@@ -1,0 +1,49 @@
+version: "3.8"
+
+services:
+  amnezia-vpn:
+    build: .
+    container_name: amnezia-vpn
+    restart: unless-stopped
+
+    # Required capabilities for VPN
+    cap_add:
+      - NET_ADMIN
+      - SYS_MODULE
+
+    # Required for userspace WireGuard
+    devices:
+      - /dev/net/tun:/dev/net/tun
+
+    # Allow sysctls for IP forwarding
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv4.conf.all.src_valid_mark=1
+
+    ports:
+      # VPN port - UDP
+      - "${VPN_PORT:-51820}:${VPN_PORT:-51820}/udp"
+
+    volumes:
+      # Persistent data (database)
+      - vpn_data:/data
+      # WireGuard configs
+      - vpn_config:/etc/amneziawg
+
+    env_file:
+      - .env
+
+    environment:
+      - TZ=UTC
+
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  vpn_data:
+    name: amnezia_vpn_data
+  vpn_config:
+    name: amnezia_vpn_config
