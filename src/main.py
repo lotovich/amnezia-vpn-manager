@@ -82,23 +82,25 @@ async def traffic_collector(db: Database, vpn: VPNManager) -> None:
                     
                     # --- Session Tracking ---
                     now = datetime.now()
-                    # A peer is considered "online" if had a handshake within the last 5 minutes
-                    is_online = (time.time() - peer_stats.latest_handshake) < 300 if peer_stats.latest_handshake > 0 else False
+                    handshake_ts = peer_stats.latest_handshake
+                    diff = time.time() - handshake_ts if handshake_ts > 0 else 999999
+                    is_online = diff < 300
+                    
+                    logger.debug(f"DEBUG: {client.name} - Handshake: {handshake_ts}, Diff: {diff:.1f}s, Online: {is_online}")
                     
                     active_session = await db.get_active_session(client.id)
                     
                     if is_online and not active_session:
                         # Start new session
-                        start_time = datetime.fromtimestamp(peer_stats.latest_handshake) if peer_stats.latest_handshake > 0 else now
+                        start_time = datetime.fromtimestamp(handshake_ts) if handshake_ts > 0 else now
                         await db.start_session(client.id, start_time)
-                        logger.info(f"FSM: Session started for {client.name} at {start_time}")
+                        logger.info(f"FSM: Session STARTED for {client.name} at {start_time}")
                         
                     elif not is_online and active_session:
                         # End current session
-                        # We use the handshake time as end time as it's the last confirmed activity
-                        end_time = datetime.fromtimestamp(peer_stats.latest_handshake) if peer_stats.latest_handshake > 0 else now
+                        end_time = datetime.fromtimestamp(handshake_ts) if handshake_ts > 0 else now
                         await db.end_session(client.id, end_time)
-                        logger.info(f"FSM: Session ended for {client.name} at {end_time}")
+                        logger.info(f"FSM: Session ENDED for {client.name} at {end_time}")
 
         except asyncio.CancelledError:
             logger.info("Traffic collector stopped")
