@@ -622,6 +622,55 @@ async def cmd_stats(message: Message) -> None:
     await show_stats_root(message)
 
 
+async def get_client_info_text(client: Client) -> str:
+    """Generate detailed formatted text with client statistics."""
+    # Get Last Handshake
+    last_seen = "Never"
+    try:
+         stats = await _vpn.get_interface_stats()
+         # Find stats for this peer
+         peer_stat = next((s for s in stats if s.public_key == client.public_key), None)
+         if peer_stat and peer_stat.latest_handshake > 0:
+             last_seen = get_time_ago(peer_stat.latest_handshake)
+    except Exception as e:
+         logger.error(f"Failed to get handshake for {client.name}: {e}")
+         
+    # Get total traffic
+    total_rx, total_tx = await _db.get_client_total_traffic(client.id)
+    
+    # Get Session Info
+    session_text = "None"
+    last_session = await _db.get_last_session(client.id)
+    if last_session:
+        try:
+            start_dt = datetime.fromisoformat(last_session["start_at"])
+            if last_session["is_active"]:
+                duration = datetime.now() - start_dt
+                session_text = f"Online for {int(duration.total_seconds() // 60)} min"
+            elif last_session.get("end_at"):
+                end_dt = datetime.fromisoformat(last_session["end_at"])
+                duration = end_dt - start_dt
+                session_text = f"Lasted {int(duration.total_seconds() // 60)} min"
+            else:
+                session_text = "Disconnected"
+        except Exception as e:
+            logger.error(f"Error parsing session for {client.name}: {e}")
+            session_text = "Error"
+    
+    # Format creation date
+    created_at_str = client.created_at.strftime("%Y-%m-%d %H:%M")
+
+    return (
+        f"👤 <b>Client</b>: <code>{client.name}</code>\n"
+        f"📡 <b>IP</b>: <code>{client.address}</code>\n"
+        f"📅 <b>Created At</b>: <code>{created_at_str}</code>\n"
+        f"⏱ <b>Last Seen</b>: <code>{last_seen}</code>\n"
+        f"⏳ <b>Session</b>: <code>{session_text}</code>\n"
+        f"📥 <b>Total Downloaded</b>: <code>{format_size(total_rx)}</code>\n"
+        f"📤 <b>Total Uploaded</b>: <code>{format_size(total_tx)}</code>"
+    )
+
+
 @router.callback_query(F.data == "stats_back")
 async def process_stats_back(callback: CallbackQuery):
     """Back to root stats menu."""
@@ -634,54 +683,16 @@ async def process_stats_selection(callback: CallbackQuery):
     target = callback.data.split(":")[1]
     
     if target == "ALL":
-        text = "📊 **Statistics: Global**\nSelect report type:"
+        text = "📊 <b>Statistics: Global</b>\nSelect report type:"
     else:
-        # Get client info
         client = await _db.get_client_by_name(target)
         if not client:
              await callback.answer("Client not found", show_alert=True)
              return
              
-        # Get Last Handshake
-        last_seen = "Never"
-        try:
-             stats = await _vpn.get_interface_stats()
-             # Find stats for this peer
-             peer_stat = next((s for s in stats if s.public_key == client.public_key), None)
-             if peer_stat and peer_stat.latest_handshake > 0:
-                 last_seen = get_time_ago(peer_stat.latest_handshake)
-        except Exception as e:
-             logger.error(f"Failed to get handshake: {e}")
-             
-        # Get total traffic
-        total_rx, total_tx = await _db.get_client_total_traffic(client.id)
-        
-        # Get Session Info
-        session_text = "None"
-        last_session = await _db.get_last_session(client.id)
-        if last_session:
-            start_dt = datetime.fromisoformat(last_session["start_at"])
-            if last_session["is_active"]:
-                duration = datetime.now() - start_dt
-                session_text = f"Online for {int(duration.total_seconds() // 60)} min"
-            else:
-                end_dt = datetime.fromisoformat(last_session["end_at"])
-                duration = end_dt - start_dt
-                session_text = f"Lasted {int(duration.total_seconds() // 60)} min"
-        
-        # Format creation date
-        created_at_str = client.created_at.strftime("%Y-%m-%d %H:%M")
-
-        text = (
-            f"👤 **Client**: `{client.name}`\n"
-            f"📡 **IP**: `{client.address}`\n"
-            f"📅 **Created At**: `{created_at_str}`\n"
-            f"⏱ **Last Seen**: `{last_seen}`\n"
-            f"⏳ **Session**: `{session_text}`\n"
-            f"📥 **Total Downloaded**: `{format_size(total_rx)}`\n"
-            f"📤 **Total Uploaded**: `{format_size(total_tx)}`\n\n"
-            "Select report type:"
-        )
+        # Get formatted info text
+        info_text = await get_client_info_text(client)
+        text = f"📊 <b>Statistics: {client.name}</b>\n\n{info_text}\n\nSelect report type:"
 
     # Menu for selected target
     keyboard = InlineKeyboardMarkup(inline_keyboard=[
@@ -694,7 +705,7 @@ async def process_stats_selection(callback: CallbackQuery):
         [InlineKeyboardButton(text="🔙 Back", callback_data="stats_back")]
     ])
     
-    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
+    await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
 
 
 @router.callback_query(F.data.startswith("stats_view:"))
@@ -707,30 +718,25 @@ async def process_stats_view(callback: CallbackQuery, state: FSMContext):
         await state.set_state(VPNStates.waiting_for_stats_start)
         await state.update_data(target_client=target)
         await callback.message.answer(
-            "📅 **Custom Date Range**\n\n"
-            "Please enter the **Start Date** (YYYY-MM-DD).\n"
-            "Example: `2024-01-01`",
-            parse_mode=ParseMode.MARKDOWN
+            "📅 <b>Custom Date Range</b>\n\n"
+            "Please enter the <b>Start Date</b> (YYYY-MM-DD).\n"
+            "Example: <code>2024-01-01</code>",
+            parse_mode=ParseMode.HTML
         )
         await callback.answer()
         return
 
     # Normal charts
     client_id = None
-    target_name = "All Clients"
-    
+    target_name = "Global"
+    info_text = ""
+
     if target != "ALL":
         client = await _db.get_client_by_name(target)
         if client:
             client_id = client.id
             target_name = client.name
-        else:
-             await callback.answer("Client not found", show_alert=True)
-             return
-
-    filename = "stats.png"
-    chart_img = None
-    caption = ""
+            info_text = "\n\n" + await get_client_info_text(client)
 
     try:
         await callback.message.edit_text("⏳ Generating chart...")
@@ -738,40 +744,48 @@ async def process_stats_view(callback: CallbackQuery, state: FSMContext):
         if action == "60m":
             data = await _db.get_minute_traffic_series(client_id=client_id, minutes=60)
             chart_img = generate_series_chart(data, f"Last Hour Activity: {target_name}")
-            caption = f"⌚ **Last Hour Activity**: {target_name} (per-minute granularity)"
+            caption = f"⌚ <b>Last Hour Activity</b>: {target_name}{info_text}"
             
         elif action == "24h":
             data = await _db.get_traffic_series(days=1, client_id=client_id)
             chart_img = generate_series_chart(data, f"Traffic History (24h): {target_name}")
-            caption = f"📈 **Dynamics (24h)**: {target_name}"
+            caption = f"📈 <b>Dynamics (24h)</b>: {target_name}{info_text}"
             
         elif action == "7d":
             data = await _db.get_traffic_series(days=7, client_id=client_id)
-            chart_img = generate_series_chart(data, f"Traffic History (7 days): {target_name}")
-            caption = f"📈 **Dynamics (7 days)**: {target_name}"
+            chart_img = generate_series_chart(data, f"Traffic History (7d): {target_name}")
+            caption = f"📈 <b>Dynamics (7d)</b>: {target_name}{info_text}"
             
         elif action == "daily":
             data = await _db.get_hourly_activity(client_id=client_id)
-            chart_img = generate_hourly_chart(data, f"Hourly Profile: {target_name}")
-            caption = f"🕒 **Hourly Activity Profile**: {target_name}\n(Average traffic by hour of day)"
+            chart_img = generate_hourly_chart(data, f"Hourly Activity Profile: {target_name}")
+            caption = f"🕒 <b>Hourly Profile</b>: {target_name}{info_text}"
             
         elif action == "weekly":
             data = await _db.get_weekly_activity(client_id=client_id)
-            chart_img = generate_weekly_chart(data, f"Weekly Profile: {target_name}")
-            caption = f"🗓 **Weekly Activity Profile**: {target_name}\n(Total traffic by day of week)"
+            chart_img = generate_weekly_chart(data, f"Weekly Activity Profile: {target_name}")
+            caption = f"🗓 <b>Weekly Profile</b>: {target_name}{info_text}"
             
         elif action == "top":
-            # Only for ALL
-            data = await _db.get_total_traffic_by_client()
-            chart_img = generate_traffic_chart(data)
-            caption = generate_stats_summary(data)
+            traffic_data = await _db.get_total_traffic_by_client()
+            chart_img = generate_traffic_chart(traffic_data, "Top Users by Total Traffic")
+            caption = "🏆 <b>Top Users by Total Traffic</b>"
+            
+        else:
+            await callback.answer("Action not supported yet", show_alert=True)
+            return
 
         if chart_img:
-            file = BufferedInputFile(chart_img, filename=filename)
+            file = BufferedInputFile(chart_img, filename="chart.png")
+            await callback.message.answer_photo(
+                file, 
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+                reply_markup=main_menu
+            )
             await callback.message.delete()
-            await callback.message.answer_photo(file, caption=caption, parse_mode=ParseMode.MARKDOWN)
         else:
-            await callback.message.edit_text("❌ No data available for this period.")
+            await callback.message.edit_text(f"📊 No data for <b>{target_name}</b> in this period.", parse_mode=ParseMode.HTML)
             
     except Exception as e:
         logger.exception(f"Stats generation failed: {e}")

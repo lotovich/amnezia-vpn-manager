@@ -246,6 +246,7 @@ class Database:
             ) as cursor:
                 row = await cursor.fetchone()
 
+            is_first_measurement = False
             if row:
                 last_received = row["last_bytes_received"]
                 last_sent = row["last_bytes_sent"]
@@ -262,9 +263,11 @@ class Database:
                 else:
                     delta_sent = current_sent
             else:
-                # First measurement
-                delta_received = current_received
-                delta_sent = current_sent
+                # First measurement - treat as initialization
+                # We return 0 delta to avoid recording historical traffic as current
+                delta_received = 0
+                delta_sent = 0
+                is_first_measurement = True
 
             # Update counters
             await db.execute(
@@ -276,8 +279,8 @@ class Database:
                 (client_id, current_received, current_sent)
             )
 
-            # Record to history if there's actual traffic
-            if delta_received > 0 or delta_sent > 0:
+            # Record to history if there's actual traffic AND it's not the initialization step
+            if (delta_received > 0 or delta_sent > 0) and not is_first_measurement:
                 await db.execute(
                     """
                     INSERT INTO traffic_history (client_id, bytes_received, bytes_sent)
