@@ -638,6 +638,10 @@ async def get_client_info_text(client: Client) -> str:
     # Get total traffic
     total_rx, total_tx = await _db.get_client_total_traffic(client.id)
     
+    # Get average session duration (all time)
+    avg_duration = await _db.get_average_session_duration(client.id)
+    avg_session_text = f"{avg_duration:.1f} min" if avg_duration > 0 else "N/A"
+
     # Get Session Info
     session_text = "None"
     last_session = await _db.get_last_session(client.id)
@@ -666,6 +670,7 @@ async def get_client_info_text(client: Client) -> str:
         f"📅 <b>Created At</b>: <code>{created_at_str}</code>\n"
         f"⏱ <b>Last Seen</b>: <code>{last_seen}</code>\n"
         f"⏳ <b>Session</b>: <code>{session_text}</code>\n"
+        f"📊 <b>Avg Session</b>: <code>{avg_session_text}</code>\n"
         f"📥 <b>Total Downloaded</b>: <code>{format_size(total_rx)}</code>\n"
         f"📤 <b>Total Uploaded</b>: <code>{format_size(total_tx)}</code>"
     )

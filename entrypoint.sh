@@ -101,6 +101,7 @@ H3 = ${AWG_H3}
 H4 = ${AWG_H4}
 EOF
 
+    chmod 600 "$CONFIG_FILE"
     log_info "Server configuration created at $CONFIG_FILE"
 else
     log_info "Updating existing server configuration with new parameters..."
@@ -115,6 +116,7 @@ else
     update_param "H2" "${AWG_H2}" "$CONFIG_FILE"
     update_param "H3" "${AWG_H3}" "$CONFIG_FILE"
     update_param "H4" "${AWG_H4}" "$CONFIG_FILE"
+    chmod 600 "$CONFIG_FILE"
     log_info "Server configuration parameters updated."
 fi
 
