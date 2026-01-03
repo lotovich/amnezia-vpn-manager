@@ -28,7 +28,7 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 
-from database import Database
+from database import Database, Client
 from vpn_manager import VPNManager
 from stats_viz import (
     generate_traffic_chart, generate_stats_summary,
