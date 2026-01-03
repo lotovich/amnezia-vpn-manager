@@ -624,14 +624,19 @@ async def cmd_stats(message: Message) -> None:
 
 async def get_client_info_text(client: Client) -> str:
     """Generate detailed formatted text with client statistics."""
-    # Get Last Handshake
+    # Get Last Handshake and Endpoint IP
     last_seen = "Never"
+    endpoint_ip = "N/A"
     try:
          stats = await _vpn.get_interface_stats()
          # Find stats for this peer
          peer_stat = next((s for s in stats if s.public_key == client.public_key), None)
-         if peer_stat and peer_stat.latest_handshake > 0:
-             last_seen = get_time_ago(peer_stat.latest_handshake)
+         if peer_stat:
+             if peer_stat.latest_handshake > 0:
+                 last_seen = get_time_ago(peer_stat.latest_handshake)
+             if peer_stat.endpoint:
+                 # Extract IP from "IP:port" format
+                 endpoint_ip = peer_stat.endpoint.split(":")[0]
     except Exception as e:
          logger.error(f"Failed to get handshake for {client.name}: {e}")
          
@@ -666,7 +671,8 @@ async def get_client_info_text(client: Client) -> str:
 
     return (
         f"👤 <b>Client</b>: <code>{client.name}</code>\n"
-        f"📡 <b>IP</b>: <code>{client.address}</code>\n"
+        f"📡 <b>VPN IP</b>: <code>{client.address}</code>\n"
+        f"🌐 <b>Real IP</b>: <code>{endpoint_ip}</code>\n"
         f"📅 <b>Created At</b>: <code>{created_at_str}</code>\n"
         f"⏱ <b>Last Seen</b>: <code>{last_seen}</code>\n"
         f"⏳ <b>Session</b>: <code>{session_text}</code>\n"
