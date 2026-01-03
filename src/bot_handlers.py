@@ -741,20 +741,35 @@ async def process_stats_view(callback: CallbackQuery, state: FSMContext):
     try:
         await callback.message.edit_text("⏳ Generating chart...")
         
+        # Determine time range for average session duration
+        avg_session = 0.0
+        if client_id:
+            if action == "60m":
+                avg_session = await _db.get_average_session_duration(client_id, minutes=60)
+            elif action == "24h":
+                avg_session = await _db.get_average_session_duration(client_id, days=1)
+            elif action == "7d":
+                avg_session = await _db.get_average_session_duration(client_id, days=7)
+            # custom, daily, weekly can be added if needed, but these are the main ones
+        
+        avg_text = ""
+        if avg_session > 0:
+            avg_text = f"\n⏱ <b>Avg Session Duration</b>: <code>{avg_session:.1f} min</code>"
+
         if action == "60m":
             data = await _db.get_minute_traffic_series(client_id=client_id, minutes=60)
             chart_img = generate_series_chart(data, f"Last Hour Activity: {target_name}")
-            caption = f"⌚ <b>Last Hour Activity</b>: {target_name}{info_text}"
+            caption = f"⌚ <b>Last Hour Activity</b>: {target_name}{info_text}{avg_text}"
             
         elif action == "24h":
             data = await _db.get_traffic_series(days=1, client_id=client_id)
             chart_img = generate_series_chart(data, f"Traffic History (24h): {target_name}")
-            caption = f"📈 <b>Dynamics (24h)</b>: {target_name}{info_text}"
+            caption = f"📈 <b>Dynamics (24h)</b>: {target_name}{info_text}{avg_text}"
             
         elif action == "7d":
             data = await _db.get_traffic_series(days=7, client_id=client_id)
             chart_img = generate_series_chart(data, f"Traffic History (7d): {target_name}")
-            caption = f"📈 <b>Dynamics (7d)</b>: {target_name}{info_text}"
+            caption = f"📈 <b>Dynamics (7d)</b>: {target_name}{info_text}{avg_text}"
             
         elif action == "daily":
             data = await _db.get_hourly_activity(client_id=client_id)

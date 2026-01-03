@@ -529,6 +529,26 @@ class Database:
                 row = await cursor.fetchone()
                 return dict(row) if row else None
 
+    async def get_average_session_duration(self, client_id: int, days: Optional[int] = None, minutes: Optional[int] = None) -> float:
+        """
+        Get average session duration in minutes for a specific period.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            query = "SELECT AVG(strftime('%s', end_at) - strftime('%s', start_at)) FROM sessions WHERE client_id = ? AND end_at IS NOT NULL"
+            params = [client_id]
+            
+            if days:
+                query += " AND start_at >= datetime('now', ?)"
+                params.append(f"-{days} days")
+            elif minutes:
+                query += " AND start_at >= datetime('now', ?)"
+                params.append(f"-{minutes} minutes")
+            
+            async with db.execute(query, tuple(params)) as cursor:
+                row = await cursor.fetchone()
+                # row[0] is average seconds
+                return (row[0] / 60.0) if row and row[0] is not None else 0.0
+
     async def get_minute_traffic_series(self, client_id: Optional[int] = None, minutes: int = 60) -> list[dict]:
         """
         Get traffic history grouped by minute for the last N minutes.
