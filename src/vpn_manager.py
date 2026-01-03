@@ -319,7 +319,10 @@ AllowedIPs = {client['address']}
                     f.write("\n[Peer]\n")
                     f.write(f"PublicKey = {client['public_key']}\n")
                     f.write(f"AllowedIPs = {client['address']}\n")
-            logger.info(f"Updated config file with {len(clients)} peers")
+            
+            # Set secure permissions: 600 (read/write only by owner)
+            os.chmod(config_path, 0o600)
+            logger.info(f"Updated config file with {len(clients)} peers and set secure permissions (600)")
         except Exception as e:
             logger.exception(f"Failed to write config file: {e}")
 
