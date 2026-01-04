@@ -677,8 +677,8 @@ async def get_client_info_text(client: Client) -> str:
         f"⏱ <b>Last Seen</b>: <code>{last_seen}</code>\n"
         f"⏳ <b>Session</b>: <code>{session_text}</code>\n"
         f"📊 <b>Avg Session</b>: <code>{avg_session_text}</code>\n"
-        f"📥 <b>Total Downloaded</b>: <code>{format_size(total_rx)}</code>\n"
-        f"📤 <b>Total Uploaded</b>: <code>{format_size(total_tx)}</code>"
+        f"📥 <b>Total Downloaded</b>: <code>{format_size(total_tx)}</code>\n"
+        f"📤 <b>Total Uploaded</b>: <code>{format_size(total_rx)}</code>"
     )
 
 

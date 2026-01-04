@@ -47,9 +47,11 @@ def generate_traffic_chart(
         return None
 
     # Prepare data
+    # Note: traffic_data is (bytes_received_by_server, bytes_sent_by_server)
+    # From client perspective: received_by_server = uploaded, sent_by_server = downloaded
     clients = list(traffic_data.keys())
-    received = [bytes_to_gb(traffic_data[c][0]) for c in clients]
-    sent = [bytes_to_gb(traffic_data[c][1]) for c in clients]
+    uploaded = [bytes_to_gb(traffic_data[c][0]) for c in clients]
+    downloaded = [bytes_to_gb(traffic_data[c][1]) for c in clients]
 
     # Create figure with dark theme for better Telegram visibility
     plt.style.use('dark_background')
@@ -62,17 +64,17 @@ def generate_traffic_chart(
     # Create bars
     bars1 = ax.bar(
         [i - width/2 for i in x],
-        received,
+        downloaded,
         width,
-        label='Downloaded (RX)',
+        label='Downloaded',
         color='#4CAF50',  # Green
         alpha=0.8
     )
     bars2 = ax.bar(
         [i + width/2 for i in x],
-        sent,
+        uploaded,
         width,
-        label='Uploaded (TX)',
+        label='Uploaded',
         color='#2196F3',  # Blue
         alpha=0.8
     )
@@ -133,16 +135,18 @@ def generate_stats_summary(traffic_data: dict[str, tuple[int, int]]) -> str:
     if not traffic_data:
         return "📊 No traffic data available yet."
 
-    total_received = sum(t[0] for t in traffic_data.values())
-    total_sent = sum(t[1] for t in traffic_data.values())
-    total_traffic = total_received + total_sent
+    # Note: traffic_data is (bytes_received_by_server, bytes_sent_by_server)
+    # From client perspective: received_by_server = uploaded, sent_by_server = downloaded
+    total_uploaded = sum(t[0] for t in traffic_data.values())
+    total_downloaded = sum(t[1] for t in traffic_data.values())
+    total_traffic = total_uploaded + total_downloaded
 
     lines = [
         "📊 **Traffic Statistics**",
         "",
         f"👥 **Active clients:** {len(traffic_data)}",
-        f"📥 **Total downloaded:** {format_size(total_received)}",
-        f"📤 **Total uploaded:** {format_size(total_sent)}",
+        f"📥 **Total downloaded:** {format_size(total_downloaded)}",
+        f"📤 **Total uploaded:** {format_size(total_uploaded)}",
         f"📦 **Total traffic:** {format_size(total_traffic)}",
         "",
         "**By client:**",
@@ -155,9 +159,10 @@ def generate_stats_summary(traffic_data: dict[str, tuple[int, int]]) -> str:
         reverse=True
     )
 
-    for i, (name, (rx, tx)) in enumerate(sorted_clients, 1):
-        total = rx + tx
-        lines.append(f"{i}. **{name}**: {format_size(total)} (↓{format_size(rx)} / ↑{format_size(tx)})")
+    for i, (name, (server_rx, server_tx)) in enumerate(sorted_clients, 1):
+        # server_rx = uploaded by client, server_tx = downloaded by client
+        total = server_rx + server_tx
+        lines.append(f"{i}. **{name}**: {format_size(total)} (↓{format_size(server_tx)} / ↑{format_size(server_rx)})")
 
     return "\n".join(lines)
 
@@ -168,20 +173,23 @@ def generate_series_chart(data: list[dict], title: str = "Traffic History (24h)"
         return None
 
     # Parse data
+    # Note: rx/tx from DB is server perspective
+    # rx (received by server) = uploaded by client
+    # tx (sent by server) = downloaded by client
     from datetime import datetime
     timestamps = [datetime.strptime(d['ts'], "%Y-%m-%d %H:%M:%S") for d in data]
-    rx = [bytes_to_gb(d['rx']) for d in data]
-    tx = [bytes_to_gb(d['tx']) for d in data]
+    uploaded = [bytes_to_gb(d['rx']) for d in data]
+    downloaded = [bytes_to_gb(d['tx']) for d in data]
 
     plt.style.use('dark_background')
     fig, ax = plt.subplots(figsize=(10, 6))
 
-    ax.plot(timestamps, rx, label='Download (RX)', color='#4CAF50', linewidth=2)
-    ax.plot(timestamps, tx, label='Upload (TX)', color='#2196F3', linewidth=2)
-    
+    ax.plot(timestamps, downloaded, label='Downloaded', color='#4CAF50', linewidth=2)
+    ax.plot(timestamps, uploaded, label='Uploaded', color='#2196F3', linewidth=2)
+
     # Fill area under curve
-    ax.fill_between(timestamps, rx, alpha=0.3, color='#4CAF50')
-    ax.fill_between(timestamps, tx, alpha=0.3, color='#2196F3')
+    ax.fill_between(timestamps, downloaded, alpha=0.3, color='#4CAF50')
+    ax.fill_between(timestamps, uploaded, alpha=0.3, color='#2196F3')
 
     ax.set_title(title, fontsize=14, fontweight='bold', color='white')
     ax.set_ylabel('Traffic (GB)', fontsize=12, color='white')
