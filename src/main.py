@@ -18,6 +18,7 @@ from aiogram.client.default import DefaultBotProperties
 from database import Database
 from vpn_manager import VPNManager
 from bot_handlers import setup_handlers
+from server_monitor import ServerMonitor
 
 # Load environment variables
 load_dotenv()
@@ -41,6 +42,12 @@ VPN_HOST = os.getenv("VPN_HOST", "vpn.example.com")
 VPN_PORT = int(os.getenv("VPN_PORT", "51820"))
 VPN_DNS = os.getenv("VPN_DNS", "1.1.1.1")
 STATS_INTERVAL = int(os.getenv("STATS_INTERVAL", "60"))  # seconds
+
+# Server monitoring configuration
+SERVER_STATS_INTERVAL = int(os.getenv("SERVER_STATS_INTERVAL", "300"))  # 5 min default
+CPU_ALERT_THRESHOLD = float(os.getenv("CPU_ALERT_THRESHOLD", "80"))
+MEM_ALERT_THRESHOLD = float(os.getenv("MEM_ALERT_THRESHOLD", "90"))
+DISK_ALERT_THRESHOLD = float(os.getenv("DISK_ALERT_THRESHOLD", "90"))
 
 
 async def traffic_collector(db: Database, vpn: VPNManager) -> None:
@@ -112,6 +119,75 @@ async def traffic_collector(db: Database, vpn: VPNManager) -> None:
             # Continue running despite errors
 
 
+async def server_stats_collector(
+    db: Database,
+    monitor: ServerMonitor,
+    bot: Bot,
+    admin_ids: list[int]
+) -> None:
+    """
+    Background task that collects server metrics.
+    Runs every SERVER_STATS_INTERVAL seconds (default 5 min).
+    """
+    logger.info(f"Server stats collector started (interval: {SERVER_STATS_INTERVAL}s)")
+
+    # Record server start event
+    await db.record_server_event('start', {'reason': 'bot_startup'})
+
+    while True:
+        try:
+            await asyncio.sleep(SERVER_STATS_INTERVAL)
+
+            # Collect metrics
+            metrics = await monitor.collect_metrics_async()
+
+            # Save to database
+            await db.save_server_metrics(metrics)
+
+            # Check for alerts
+            alerts = monitor.check_alerts(metrics)
+            for alert in alerts:
+                # Send alert to all admins
+                alert_text = format_alert_message(alert, metrics)
+                for admin_id in admin_ids:
+                    try:
+                        await bot.send_message(admin_id, alert_text, parse_mode=ParseMode.HTML)
+                    except Exception as e:
+                        logger.error(f"Failed to send alert to {admin_id}: {e}")
+
+                # Record alert event
+                await db.record_server_event('alert', alert)
+
+            logger.debug(
+                f"Server metrics: CPU={metrics.cpu_percent:.1f}%, "
+                f"RAM={metrics.mem_percent:.1f}%, Disk={metrics.disk_percent:.1f}%"
+            )
+
+        except asyncio.CancelledError:
+            logger.info("Server stats collector stopped")
+            await db.record_server_event('stop', {'reason': 'shutdown'})
+            raise
+        except Exception as e:
+            logger.exception(f"Error in server stats collector: {e}")
+
+
+def format_alert_message(alert: dict, metrics) -> str:
+    """Format alert message for Telegram."""
+    icons = {'cpu': '🔥', 'memory': '💾', 'disk': '💿'}
+    names = {'cpu': 'CPU', 'memory': 'Memory', 'disk': 'Disk'}
+
+    return (
+        f"{icons.get(alert['type'], '⚠️')} <b>Server Alert!</b>\n\n"
+        f"<b>{names.get(alert['type'], alert['type'])}</b> usage is high:\n"
+        f"Current: <code>{alert['value']:.1f}%</code>\n"
+        f"Threshold: <code>{alert['threshold']:.1f}%</code>\n\n"
+        f"<b>Current Status:</b>\n"
+        f"🔥 CPU: {metrics.cpu_percent:.1f}%\n"
+        f"💾 RAM: {metrics.mem_percent:.1f}%\n"
+        f"💿 Disk: {metrics.disk_percent:.1f}%"
+    )
+
+
 async def main() -> None:
     """Main entry point."""
     # Validate configuration
@@ -144,6 +220,14 @@ async def main() -> None:
     )
     logger.info("VPN manager initialized")
 
+    # Initialize server monitor
+    monitor = ServerMonitor(
+        cpu_threshold=CPU_ALERT_THRESHOLD,
+        mem_threshold=MEM_ALERT_THRESHOLD,
+        disk_threshold=DISK_ALERT_THRESHOLD,
+    )
+    logger.info(f"Server monitor initialized (thresholds: CPU>{CPU_ALERT_THRESHOLD}%, MEM>{MEM_ALERT_THRESHOLD}%)")
+
     # Initialize bot
     bot = Bot(
         token=BOT_TOKEN,
@@ -152,7 +236,7 @@ async def main() -> None:
     dp = Dispatcher()
 
     # Setup handlers
-    router = setup_handlers(db, vpn)
+    router = setup_handlers(db, vpn, monitor)
     dp.include_router(router)
 
     # Initial Server Sync: Restore state from DB to Config File
@@ -176,6 +260,12 @@ async def main() -> None:
     # Start traffic collector in background
     collector_task = asyncio.create_task(traffic_collector(db, vpn))
 
+    # Start server stats collector in background
+    admin_id_list = [int(x.strip()) for x in admin_ids.split(",") if x.strip().isdigit()]
+    server_collector_task = asyncio.create_task(
+        server_stats_collector(db, monitor, bot, admin_id_list)
+    )
+
     try:
         # Start polling
         logger.info("Bot started, waiting for commands...")
@@ -184,8 +274,13 @@ async def main() -> None:
     finally:
         # Cleanup
         collector_task.cancel()
+        server_collector_task.cancel()
         try:
             await collector_task
+        except asyncio.CancelledError:
+            pass
+        try:
+            await server_collector_task
         except asyncio.CancelledError:
             pass
         await bot.session.close()

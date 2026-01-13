@@ -269,3 +269,291 @@ def generate_weekly_chart(data: list[dict], title: str = "Weekly Activity Profil
     buf.seek(0)
     plt.close(fig)
     return buf.getvalue()
+
+
+# --- Server Monitoring Charts ---
+
+def generate_server_cpu_chart(data: list[dict], title: str = "CPU Usage") -> Optional[bytes]:
+    """Generate CPU usage time series chart."""
+    if not data:
+        return None
+
+    from datetime import datetime
+
+    timestamps = []
+    cpu_values = []
+    for d in data:
+        try:
+            ts = d['timestamp']
+            if isinstance(ts, str):
+                # Try different formats
+                for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:00", "%Y-%m-%d"]:
+                    try:
+                        timestamps.append(datetime.strptime(ts, fmt))
+                        break
+                    except ValueError:
+                        continue
+                else:
+                    timestamps.append(datetime.fromisoformat(ts))
+            else:
+                timestamps.append(ts)
+            cpu_values.append(d['cpu_percent'])
+        except Exception as e:
+            logger.warning(f"Failed to parse data point: {e}")
+            continue
+
+    if not timestamps:
+        return None
+
+    plt.style.use('dark_background')
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    ax.plot(timestamps, cpu_values, color='#FF5722', linewidth=2, label='CPU %')
+    ax.fill_between(timestamps, cpu_values, alpha=0.3, color='#FF5722')
+
+    # Add threshold line
+    ax.axhline(y=80, color='#F44336', linestyle='--', alpha=0.7, label='Alert (80%)')
+
+    ax.set_title(title, fontsize=14, fontweight='bold', color='white')
+    ax.set_ylabel('CPU Usage (%)', fontsize=12, color='white')
+    ax.set_ylim(0, 100)
+    ax.grid(True, linestyle='--', alpha=0.3)
+    ax.legend(loc='upper right')
+
+    fig.autofmt_xdate()
+    plt.tight_layout()
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=150, facecolor='#1a1a1a', edgecolor='none')
+    buf.seek(0)
+    plt.close(fig)
+    return buf.getvalue()
+
+
+def generate_server_memory_chart(data: list[dict], title: str = "Memory Usage") -> Optional[bytes]:
+    """Generate memory usage time series chart."""
+    if not data:
+        return None
+
+    from datetime import datetime
+
+    timestamps = []
+    mem_values = []
+    for d in data:
+        try:
+            ts = d['timestamp']
+            if isinstance(ts, str):
+                for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:00", "%Y-%m-%d"]:
+                    try:
+                        timestamps.append(datetime.strptime(ts, fmt))
+                        break
+                    except ValueError:
+                        continue
+                else:
+                    timestamps.append(datetime.fromisoformat(ts))
+            else:
+                timestamps.append(ts)
+            mem_values.append(d['mem_percent'])
+        except Exception as e:
+            logger.warning(f"Failed to parse data point: {e}")
+            continue
+
+    if not timestamps:
+        return None
+
+    plt.style.use('dark_background')
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    ax.plot(timestamps, mem_values, color='#2196F3', linewidth=2, label='RAM %')
+    ax.fill_between(timestamps, mem_values, alpha=0.3, color='#2196F3')
+
+    # Add threshold line
+    ax.axhline(y=90, color='#F44336', linestyle='--', alpha=0.7, label='Alert (90%)')
+
+    ax.set_title(title, fontsize=14, fontweight='bold', color='white')
+    ax.set_ylabel('Memory Usage (%)', fontsize=12, color='white')
+    ax.set_ylim(0, 100)
+    ax.grid(True, linestyle='--', alpha=0.3)
+    ax.legend(loc='upper right')
+
+    fig.autofmt_xdate()
+    plt.tight_layout()
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=150, facecolor='#1a1a1a', edgecolor='none')
+    buf.seek(0)
+    plt.close(fig)
+    return buf.getvalue()
+
+
+def generate_server_disk_chart(data: list[dict], title: str = "Disk Usage") -> Optional[bytes]:
+    """Generate disk usage time series chart."""
+    if not data:
+        return None
+
+    from datetime import datetime
+
+    timestamps = []
+    disk_values = []
+    for d in data:
+        try:
+            ts = d['timestamp']
+            if isinstance(ts, str):
+                for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:00", "%Y-%m-%d"]:
+                    try:
+                        timestamps.append(datetime.strptime(ts, fmt))
+                        break
+                    except ValueError:
+                        continue
+                else:
+                    timestamps.append(datetime.fromisoformat(ts))
+            else:
+                timestamps.append(ts)
+            disk_values.append(d['disk_percent'])
+        except Exception as e:
+            logger.warning(f"Failed to parse data point: {e}")
+            continue
+
+    if not timestamps:
+        return None
+
+    plt.style.use('dark_background')
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    ax.plot(timestamps, disk_values, color='#4CAF50', linewidth=2, label='Disk %')
+    ax.fill_between(timestamps, disk_values, alpha=0.3, color='#4CAF50')
+
+    # Add threshold line
+    ax.axhline(y=90, color='#F44336', linestyle='--', alpha=0.7, label='Alert (90%)')
+
+    ax.set_title(title, fontsize=14, fontweight='bold', color='white')
+    ax.set_ylabel('Disk Usage (%)', fontsize=12, color='white')
+    ax.set_ylim(0, 100)
+    ax.grid(True, linestyle='--', alpha=0.3)
+    ax.legend(loc='upper right')
+
+    fig.autofmt_xdate()
+    plt.tight_layout()
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=150, facecolor='#1a1a1a', edgecolor='none')
+    buf.seek(0)
+    plt.close(fig)
+    return buf.getvalue()
+
+
+def generate_server_combined_chart(data: list[dict], title: str = "Server Resources") -> Optional[bytes]:
+    """Generate combined chart with CPU, RAM, Disk."""
+    if not data:
+        return None
+
+    from datetime import datetime
+
+    timestamps = []
+    cpu_values = []
+    mem_values = []
+    disk_values = []
+
+    for d in data:
+        try:
+            ts = d['timestamp']
+            if isinstance(ts, str):
+                for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:00", "%Y-%m-%d"]:
+                    try:
+                        timestamps.append(datetime.strptime(ts, fmt))
+                        break
+                    except ValueError:
+                        continue
+                else:
+                    timestamps.append(datetime.fromisoformat(ts))
+            else:
+                timestamps.append(ts)
+            cpu_values.append(d['cpu_percent'])
+            mem_values.append(d['mem_percent'])
+            disk_values.append(d['disk_percent'])
+        except Exception as e:
+            logger.warning(f"Failed to parse data point: {e}")
+            continue
+
+    if not timestamps:
+        return None
+
+    plt.style.use('dark_background')
+    fig, ax = plt.subplots(figsize=(12, 6))
+
+    ax.plot(timestamps, cpu_values, color='#FF5722', linewidth=2, label='CPU')
+    ax.plot(timestamps, mem_values, color='#2196F3', linewidth=2, label='RAM')
+    ax.plot(timestamps, disk_values, color='#4CAF50', linewidth=2, label='Disk')
+
+    ax.set_title(title, fontsize=14, fontweight='bold', color='white')
+    ax.set_ylabel('Usage (%)', fontsize=12, color='white')
+    ax.set_ylim(0, 100)
+    ax.grid(True, linestyle='--', alpha=0.3)
+    ax.legend(loc='upper right')
+
+    fig.autofmt_xdate()
+    plt.tight_layout()
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=150, facecolor='#1a1a1a', edgecolor='none')
+    buf.seek(0)
+    plt.close(fig)
+    return buf.getvalue()
+
+
+def generate_server_network_chart(data: list[dict], title: str = "Network Bandwidth") -> Optional[bytes]:
+    """Generate network bandwidth time series chart."""
+    if not data:
+        return None
+
+    from datetime import datetime
+
+    timestamps = []
+    sent_values = []
+    recv_values = []
+
+    for d in data:
+        try:
+            ts = d['timestamp']
+            if isinstance(ts, str):
+                for fmt in ["%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:00", "%Y-%m-%d"]:
+                    try:
+                        timestamps.append(datetime.strptime(ts, fmt))
+                        break
+                    except ValueError:
+                        continue
+                else:
+                    timestamps.append(datetime.fromisoformat(ts))
+            else:
+                timestamps.append(ts)
+            # Convert bytes to MB
+            sent_values.append(d['net_bytes_sent'] / (1024 * 1024))
+            recv_values.append(d['net_bytes_recv'] / (1024 * 1024))
+        except Exception as e:
+            logger.warning(f"Failed to parse data point: {e}")
+            continue
+
+    if not timestamps:
+        return None
+
+    plt.style.use('dark_background')
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    ax.plot(timestamps, recv_values, color='#4CAF50', linewidth=2, label='Received')
+    ax.plot(timestamps, sent_values, color='#2196F3', linewidth=2, label='Sent')
+    ax.fill_between(timestamps, recv_values, alpha=0.3, color='#4CAF50')
+    ax.fill_between(timestamps, sent_values, alpha=0.3, color='#2196F3')
+
+    ax.set_title(title, fontsize=14, fontweight='bold', color='white')
+    ax.set_ylabel('Traffic (MB per interval)', fontsize=12, color='white')
+    ax.grid(True, linestyle='--', alpha=0.3)
+    ax.legend(loc='upper right')
+
+    fig.autofmt_xdate()
+    plt.tight_layout()
+
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png', dpi=150, facecolor='#1a1a1a', edgecolor='none')
+    buf.seek(0)
+    plt.close(fig)
+    return buf.getvalue()

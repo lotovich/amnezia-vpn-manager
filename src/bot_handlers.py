@@ -33,8 +33,12 @@ from vpn_manager import VPNManager
 from stats_viz import (
     generate_traffic_chart, generate_stats_summary,
     generate_series_chart, generate_hourly_chart, generate_weekly_chart,
+    generate_server_cpu_chart, generate_server_memory_chart,
+    generate_server_disk_chart, generate_server_combined_chart,
+    generate_server_network_chart,
     format_size
 )
+from server_monitor import ServerMonitor, get_uptime_info
 
 
 
@@ -254,6 +258,7 @@ PersistentKeepalive = 25"""
 # Store references to shared objects (set from main.py)
 _db: Database = None
 _vpn: VPNManager = None
+_monitor: ServerMonitor = None
 
 
 # States for FSM
@@ -262,13 +267,16 @@ class VPNStates(StatesGroup):
     waiting_for_app_type = State()
     waiting_for_stats_start = State()
     waiting_for_stats_end = State()
+    waiting_for_srv_stats_start = State()
+    waiting_for_srv_stats_end = State()
 
 
 # Main menu keyboard
 main_menu = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="👤 Create Client"), KeyboardButton(text="🗑 Delete Client")],
-        [KeyboardButton(text="📋 List Clients"), KeyboardButton(text="📊 Statistics")]
+        [KeyboardButton(text="📋 List Clients"), KeyboardButton(text="📊 Statistics")],
+        [KeyboardButton(text="🖥 Server Status")]
     ],
     resize_keyboard=True,
     input_field_placeholder="Select an action"
@@ -297,11 +305,12 @@ async def full_sync_server() -> None:
         logger.error("Failed to sync server configuration")
 
 
-def setup_handlers(db: Database, vpn: VPNManager) -> Router:
-    """Setup handlers with database and VPN manager references."""
-    global _db, _vpn
+def setup_handlers(db: Database, vpn: VPNManager, monitor: ServerMonitor = None) -> Router:
+    """Setup handlers with database, VPN manager, and monitor references."""
+    global _db, _vpn, _monitor
     _db = db
     _vpn = vpn
+    _monitor = monitor
     return router
 
 
@@ -883,6 +892,264 @@ async def process_stats_end_date(message: Message, state: FSMContext) -> None:
     finally:
         await state.clear()
 
+
+# ========== Server Status Handlers ==========
+
+@router.message(F.text == "🖥 Server Status", StateFilter("*"))
+@router.message(Command("server"), StateFilter("*"))
+@admin_only
+async def cmd_server_status(message: Message) -> None:
+    """Show server status menu."""
+    # Get current metrics
+    if _monitor:
+        metrics = await _monitor.collect_metrics_async()
+        uptime = get_uptime_info()
+
+        status_text = (
+            "🖥 <b>Server Status</b>\n\n"
+            f"⏱ <b>Uptime:</b> <code>{uptime['uptime_formatted']}</code>\n\n"
+            f"🔥 <b>CPU:</b> <code>{metrics.cpu_percent:.1f}%</code> ({metrics.cpu_count} cores)\n"
+            f"💾 <b>RAM:</b> <code>{metrics.mem_percent:.1f}%</code> "
+            f"({format_size(metrics.mem_used)} / {format_size(metrics.mem_total)})\n"
+            f"💿 <b>Disk:</b> <code>{metrics.disk_percent:.1f}%</code> "
+            f"({format_size(metrics.disk_used)} / {format_size(metrics.disk_total)})\n"
+        )
+
+        if metrics.load_1m is not None:
+            status_text += f"\n📊 <b>Load:</b> <code>{metrics.load_1m:.2f}</code> / {metrics.load_5m:.2f} / {metrics.load_15m:.2f}"
+    else:
+        status_text = "🖥 <b>Server Status</b>\n\nMonitor not initialized."
+
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📈 Last Hour", callback_data="srv_view:60m"),
+         InlineKeyboardButton(text="📈 24 Hours", callback_data="srv_view:24h")],
+        [InlineKeyboardButton(text="📈 7 Days", callback_data="srv_view:7d"),
+         InlineKeyboardButton(text="📈 30 Days", callback_data="srv_view:30d")],
+        [InlineKeyboardButton(text="📈 All Time", callback_data="srv_view:all"),
+         InlineKeyboardButton(text="📅 Custom", callback_data="srv_view:custom")],
+        [InlineKeyboardButton(text="🔥 CPU", callback_data="srv_chart:cpu"),
+         InlineKeyboardButton(text="💾 RAM", callback_data="srv_chart:mem"),
+         InlineKeyboardButton(text="💿 Disk", callback_data="srv_chart:disk")],
+        [InlineKeyboardButton(text="🌐 Network", callback_data="srv_chart:net"),
+         InlineKeyboardButton(text="📊 All", callback_data="srv_chart:combined")],
+        [InlineKeyboardButton(text="🏔 Peaks", callback_data="srv_view:peaks"),
+         InlineKeyboardButton(text="📋 Events", callback_data="srv_view:events")],
+    ])
+
+    await message.answer(status_text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+
+
+@router.callback_query(F.data.startswith("srv_view:"))
+async def process_server_view(callback: CallbackQuery, state: FSMContext):
+    """Handle server stats view selection."""
+    action = callback.data.split(":")[1]
+
+    if action == "custom":
+        await state.set_state(VPNStates.waiting_for_srv_stats_start)
+        await callback.message.answer(
+            "📅 <b>Custom Date Range</b>\n\n"
+            "Please enter the <b>Start Date</b> (YYYY-MM-DD).\n"
+            "Example: <code>2024-01-01</code>",
+            parse_mode=ParseMode.HTML
+        )
+        await callback.answer()
+        return
+
+    try:
+        await callback.message.edit_text("⏳ Loading data...")
+
+        if action == "60m":
+            data = await _db.get_server_stats_series(minutes=60)
+            chart_img = generate_server_combined_chart(data, "Server Resources (Last Hour)")
+            caption = "📈 <b>Server Resources</b> (Last Hour)"
+
+        elif action == "24h":
+            data = await _db.get_server_stats_series(days=1)
+            chart_img = generate_server_combined_chart(data, "Server Resources (24h)")
+            caption = "📈 <b>Server Resources</b> (24 Hours)"
+
+        elif action == "7d":
+            data = await _db.get_server_stats_series(days=7)
+            chart_img = generate_server_combined_chart(data, "Server Resources (7 Days)")
+            caption = "📈 <b>Server Resources</b> (7 Days)"
+
+        elif action == "30d":
+            # Use aggregated data for 30 days
+            data = await _db.get_server_stats_aggregated(days=30, group_by='hour')
+            chart_img = generate_server_combined_chart(data, "Server Resources (30 Days)")
+            caption = "📈 <b>Server Resources</b> (30 Days, hourly avg)"
+
+        elif action == "all":
+            # Use daily aggregation for all time
+            data = await _db.get_server_stats_aggregated(days=None, group_by='day')
+            chart_img = generate_server_combined_chart(data, "Server Resources (All Time)")
+            caption = "📈 <b>Server Resources</b> (All Time, daily avg)"
+
+        elif action == "peaks":
+            peaks = await _db.get_server_stats_peaks(days=7)
+            text = (
+                "🏔 <b>Peak Values (Last 7 Days)</b>\n\n"
+                f"🔥 <b>Peak CPU:</b> <code>{peaks.get('peak_cpu', 0) or 0:.1f}%</code>\n"
+                f"💾 <b>Peak RAM:</b> <code>{peaks.get('peak_mem', 0) or 0:.1f}%</code>\n"
+                f"💿 <b>Peak Disk:</b> <code>{peaks.get('peak_disk', 0) or 0:.1f}%</code>\n\n"
+                f"📊 <b>Average CPU:</b> <code>{peaks.get('avg_cpu', 0) or 0:.1f}%</code>\n"
+                f"📊 <b>Average RAM:</b> <code>{peaks.get('avg_mem', 0) or 0:.1f}%</code>\n"
+                f"📊 <b>Average Disk:</b> <code>{peaks.get('avg_disk', 0) or 0:.1f}%</code>"
+            )
+            await callback.message.edit_text(text, parse_mode=ParseMode.HTML)
+            await callback.answer()
+            return
+
+        elif action == "events":
+            events = await _db.get_server_events(days=30)
+            if events:
+                lines = ["📋 <b>Server Events (Last 30 Days)</b>\n"]
+                for e in events[:20]:  # Limit to 20 entries
+                    icon = {"start": "🟢", "stop": "🔴", "alert": "⚠️"}.get(e['event_type'], "📌")
+                    time_str = e['event_time'][:16]  # YYYY-MM-DD HH:MM
+                    lines.append(f"{icon} <code>{time_str}</code> - {e['event_type']}")
+                text = "\n".join(lines)
+            else:
+                text = "📋 <b>Server Events</b>\n\nNo events recorded."
+            await callback.message.edit_text(text, parse_mode=ParseMode.HTML)
+            await callback.answer()
+            return
+        else:
+            await callback.answer("Unknown action", show_alert=True)
+            return
+
+        if chart_img:
+            file = BufferedInputFile(chart_img, filename="server_chart.png")
+            await callback.message.answer_photo(
+                file,
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+                reply_markup=main_menu
+            )
+            await callback.message.delete()
+        else:
+            await callback.message.edit_text("📊 No data available for this period.")
+
+    except Exception as e:
+        logger.exception(f"Server stats view failed: {e}")
+        try:
+            await callback.message.edit_text(f"❌ Error: {e}")
+        except:
+            pass
+
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("srv_chart:"))
+async def process_server_chart(callback: CallbackQuery):
+    """Handle specific server chart generation."""
+    chart_type = callback.data.split(":")[1]
+
+    try:
+        await callback.message.edit_text("⏳ Generating chart...")
+
+        data = await _db.get_server_stats_series(days=1)  # Default to 24h
+
+        if chart_type == "cpu":
+            chart_img = generate_server_cpu_chart(data, "CPU Usage (24h)")
+            caption = "🔥 <b>CPU Usage</b> (24 Hours)"
+        elif chart_type == "mem":
+            chart_img = generate_server_memory_chart(data, "Memory Usage (24h)")
+            caption = "💾 <b>Memory Usage</b> (24 Hours)"
+        elif chart_type == "disk":
+            chart_img = generate_server_disk_chart(data, "Disk Usage (24h)")
+            caption = "💿 <b>Disk Usage</b> (24 Hours)"
+        elif chart_type == "net":
+            chart_img = generate_server_network_chart(data, "Network Bandwidth (24h)")
+            caption = "🌐 <b>Network Bandwidth</b> (24 Hours)"
+        elif chart_type == "combined":
+            chart_img = generate_server_combined_chart(data, "All Resources (24h)")
+            caption = "📊 <b>All Resources</b> (24 Hours)"
+        else:
+            await callback.answer("Unknown chart type", show_alert=True)
+            return
+
+        if chart_img:
+            file = BufferedInputFile(chart_img, filename="server_chart.png")
+            await callback.message.answer_photo(
+                file,
+                caption=caption,
+                parse_mode=ParseMode.HTML,
+                reply_markup=main_menu
+            )
+            await callback.message.delete()
+        else:
+            await callback.message.edit_text("📊 No data available.")
+
+    except Exception as e:
+        logger.exception(f"Server chart failed: {e}")
+        try:
+            await callback.message.edit_text(f"❌ Error: {e}")
+        except:
+            pass
+
+    await callback.answer()
+
+
+@router.message(VPNStates.waiting_for_srv_stats_start)
+async def process_srv_stats_start_date(message: Message, state: FSMContext) -> None:
+    """Handle server stats start date input."""
+    date_str = message.text.strip()
+    try:
+        datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        await message.answer("❌ Invalid format! Please use YYYY-MM-DD.")
+        return
+
+    await state.update_data(srv_start_date=date_str)
+    await state.set_state(VPNStates.waiting_for_srv_stats_end)
+    await message.answer(
+        "📅 <b>End Date</b>\n\nPlease enter the <b>End Date</b> (YYYY-MM-DD).\nSend <code>today</code> for current date.",
+        parse_mode=ParseMode.HTML
+    )
+
+
+@router.message(VPNStates.waiting_for_srv_stats_end)
+async def process_srv_stats_end_date(message: Message, state: FSMContext) -> None:
+    """Handle server stats end date and generate chart."""
+    date_str = message.text.strip().lower()
+    data = await state.get_data()
+    start_date = data["srv_start_date"]
+
+    if date_str == "today":
+        end_date = datetime.now().strftime("%Y-%m-%d")
+    else:
+        try:
+            datetime.strptime(date_str, "%Y-%m-%d")
+            end_date = date_str
+        except ValueError:
+            await message.answer("❌ Invalid format! Please use YYYY-MM-DD or 'today'.")
+            return
+
+    if start_date > end_date:
+        await message.answer("❌ Start date cannot be after end date!")
+        return
+
+    await message.answer("⏳ Generating chart...")
+
+    try:
+        stats_data = await _db.get_server_stats_series(start_date=start_date, end_date=end_date)
+        chart_img = generate_server_combined_chart(stats_data, f"Server Resources: {start_date} to {end_date}")
+
+        if chart_img:
+            file = BufferedInputFile(chart_img, filename="server_custom_stats.png")
+            await message.answer_photo(
+                file,
+                caption=f"📈 <b>Server Resources</b>\nPeriod: <code>{start_date}</code> - <code>{end_date}</code>",
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await message.answer("❌ No data found for this period.")
+    except Exception as e:
+        logger.exception(f"Custom server stats error: {e}")
+        await message.answer(f"❌ Error: {e}")
+    finally:
+        await state.clear()
 
 
 @router.message(F.text, StateFilter("*"))

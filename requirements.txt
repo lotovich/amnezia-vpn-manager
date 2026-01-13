@@ -13,3 +13,6 @@ matplotlib==3.9.2
 
 # Environment variables
 python-dotenv==1.0.1
+
+# Server monitoring
+psutil==5.9.8

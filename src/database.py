@@ -105,6 +105,47 @@ class Database:
                 ON sessions(client_id)
             """)
 
+            # Server stats table
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS server_stats (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    cpu_percent REAL NOT NULL,
+                    cpu_count INTEGER NOT NULL,
+                    mem_total INTEGER NOT NULL,
+                    mem_used INTEGER NOT NULL,
+                    mem_percent REAL NOT NULL,
+                    disk_total INTEGER NOT NULL,
+                    disk_used INTEGER NOT NULL,
+                    disk_percent REAL NOT NULL,
+                    net_bytes_sent INTEGER NOT NULL,
+                    net_bytes_recv INTEGER NOT NULL,
+                    load_1m REAL,
+                    load_5m REAL,
+                    load_15m REAL
+                )
+            """)
+
+            # Server events table (start/stop/alerts)
+            await db.execute("""
+                CREATE TABLE IF NOT EXISTS server_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_type TEXT NOT NULL,
+                    event_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    details TEXT
+                )
+            """)
+
+            # Indexes for server stats
+            await db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_server_stats_timestamp
+                ON server_stats(timestamp)
+            """)
+            await db.execute("""
+                CREATE INDEX IF NOT EXISTS idx_server_events_time
+                ON server_events(event_time)
+            """)
+
             await db.commit()
 
     async def add_client(
@@ -555,9 +596,9 @@ class Database:
         """
         async with aiosqlite.connect(self.db_path) as db:
             db.row_factory = aiosqlite.Row
-            
+
             query = """
-                SELECT 
+                SELECT
                     strftime('%Y-%m-%d %H:%M:00', recorded_at) as ts,
                     SUM(bytes_received) as rx,
                     SUM(bytes_sent) as tx
@@ -565,12 +606,230 @@ class Database:
                 WHERE recorded_at >= datetime('now', ?)
             """
             params = [f"-{minutes} minutes"]
-            
+
             if client_id:
                 query += " AND client_id = ?"
                 params.append(client_id)
-                
+
             query += " GROUP BY ts ORDER BY ts"
-            
+
             async with db.execute(query, tuple(params)) as cursor:
                 return [dict(row) for row in await cursor.fetchall()]
+
+    # --- Server Monitoring ---
+
+    async def save_server_metrics(self, metrics) -> None:
+        """Save server metrics snapshot to database."""
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                """
+                INSERT INTO server_stats (
+                    timestamp, cpu_percent, cpu_count,
+                    mem_total, mem_used, mem_percent,
+                    disk_total, disk_used, disk_percent,
+                    net_bytes_sent, net_bytes_recv,
+                    load_1m, load_5m, load_15m
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    metrics.timestamp.isoformat(),
+                    metrics.cpu_percent,
+                    metrics.cpu_count,
+                    metrics.mem_total,
+                    metrics.mem_used,
+                    metrics.mem_percent,
+                    metrics.disk_total,
+                    metrics.disk_used,
+                    metrics.disk_percent,
+                    metrics.net_bytes_sent,
+                    metrics.net_bytes_recv,
+                    metrics.load_1m,
+                    metrics.load_5m,
+                    metrics.load_15m,
+                )
+            )
+            await db.commit()
+
+    async def get_server_stats_series(
+        self,
+        minutes: Optional[int] = None,
+        days: Optional[int] = None,
+        start_date: Optional[str] = None,
+        end_date: Optional[str] = None
+    ) -> list[dict]:
+        """
+        Get server stats time series.
+        Returns list of dicts with metrics.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+
+            if minutes:
+                query = """
+                    SELECT * FROM server_stats
+                    WHERE timestamp >= datetime('now', ?)
+                    ORDER BY timestamp
+                """
+                params = (f"-{minutes} minutes",)
+            elif days:
+                query = """
+                    SELECT * FROM server_stats
+                    WHERE timestamp >= datetime('now', ?)
+                    ORDER BY timestamp
+                """
+                params = (f"-{days} days",)
+            elif start_date and end_date:
+                query = """
+                    SELECT * FROM server_stats
+                    WHERE timestamp BETWEEN ? AND ?
+                    ORDER BY timestamp
+                """
+                params = (f"{start_date} 00:00:00", f"{end_date} 23:59:59")
+            else:
+                # Default: last 24 hours
+                query = """
+                    SELECT * FROM server_stats
+                    WHERE timestamp >= datetime('now', '-1 day')
+                    ORDER BY timestamp
+                """
+                params = ()
+
+            async with db.execute(query, params) as cursor:
+                return [dict(row) for row in await cursor.fetchall()]
+
+    async def get_server_stats_aggregated(
+        self,
+        days: Optional[int] = None,
+        group_by: str = 'hour'
+    ) -> list[dict]:
+        """
+        Get aggregated server stats (by hour or day).
+        Used for long periods (30 days, all time).
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+
+            if group_by == 'day':
+                time_format = '%Y-%m-%d'
+            else:  # hour
+                time_format = '%Y-%m-%d %H:00'
+
+            query = f"""
+                SELECT
+                    strftime('{time_format}', timestamp) as timestamp,
+                    AVG(cpu_percent) as cpu_percent,
+                    MAX(cpu_percent) as cpu_max,
+                    AVG(cpu_count) as cpu_count,
+                    AVG(mem_total) as mem_total,
+                    AVG(mem_used) as mem_used,
+                    AVG(mem_percent) as mem_percent,
+                    MAX(mem_percent) as mem_max,
+                    AVG(disk_total) as disk_total,
+                    AVG(disk_used) as disk_used,
+                    AVG(disk_percent) as disk_percent,
+                    SUM(net_bytes_sent) as net_bytes_sent,
+                    SUM(net_bytes_recv) as net_bytes_recv,
+                    AVG(load_1m) as load_1m,
+                    AVG(load_5m) as load_5m,
+                    AVG(load_15m) as load_15m
+                FROM server_stats
+            """
+            params = []
+
+            if days:
+                query += " WHERE timestamp >= datetime('now', ?)"
+                params.append(f"-{days} days")
+
+            query += f" GROUP BY strftime('{time_format}', timestamp) ORDER BY timestamp"
+
+            async with db.execute(query, tuple(params)) as cursor:
+                return [dict(row) for row in await cursor.fetchall()]
+
+    async def get_server_stats_latest(self) -> Optional[dict]:
+        """Get most recent server stats."""
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM server_stats ORDER BY timestamp DESC LIMIT 1"
+            ) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+
+    async def get_server_stats_peaks(self, days: int = 7) -> dict:
+        """
+        Get peak values for server metrics over specified period.
+        Returns dict with max and avg values.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT
+                    MAX(cpu_percent) as peak_cpu,
+                    MAX(mem_percent) as peak_mem,
+                    MAX(disk_percent) as peak_disk,
+                    MAX(net_bytes_sent) as peak_net_sent,
+                    MAX(net_bytes_recv) as peak_net_recv,
+                    AVG(cpu_percent) as avg_cpu,
+                    AVG(mem_percent) as avg_mem,
+                    AVG(disk_percent) as avg_disk
+                FROM server_stats
+                WHERE timestamp >= datetime('now', ?)
+                """,
+                (f"-{days} days",)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else {}
+
+    async def record_server_event(self, event_type: str, details: dict = None) -> None:
+        """Record server event (start, stop, alert)."""
+        import json
+        async with aiosqlite.connect(self.db_path) as db:
+            await db.execute(
+                "INSERT INTO server_events (event_type, details) VALUES (?, ?)",
+                (event_type, json.dumps(details) if details else None)
+            )
+            await db.commit()
+
+    async def get_server_events(self, days: int = 30, event_type: Optional[str] = None) -> list[dict]:
+        """Get server events history."""
+        import json
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+
+            query = """
+                SELECT * FROM server_events
+                WHERE event_time >= datetime('now', ?)
+            """
+            params = [f"-{days} days"]
+
+            if event_type:
+                query += " AND event_type = ?"
+                params.append(event_type)
+
+            query += " ORDER BY event_time DESC"
+
+            async with db.execute(query, tuple(params)) as cursor:
+                results = []
+                async for row in cursor:
+                    d = dict(row)
+                    if d.get('details'):
+                        try:
+                            d['details'] = json.loads(d['details'])
+                        except json.JSONDecodeError:
+                            pass
+                    results.append(d)
+                return results
+
+    async def cleanup_old_server_stats(self, days: int = 365) -> int:
+        """
+        Delete server stats older than specified days.
+        Returns number of deleted rows.
+        """
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "DELETE FROM server_stats WHERE timestamp < datetime('now', ?)",
+                (f"-{days} days",)
+            )
+            await db.commit()
+            return cursor.rowcount
