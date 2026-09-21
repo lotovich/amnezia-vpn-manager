@@ -225,27 +225,20 @@ PersistentKeepalive = 25"""
         "hostName": host
     }
 
-    # Encode using AmneziaVPN format (12-byte header):
-    # 1. JSON
+    # Encode using AmneziaVPN format (Qt qCompress):
+    # 1. JSON → UTF-8 bytes
     # 2. Compress with zlib
-    # 3. Header: Magic(4) + TotalRemaining(4) + UncompressedLen(4)
-    # Magic = 0x07c00100
-    
-    json_str = json.dumps(config)  # Compact JSON
+    # 3. Prepend 4-byte big-endian uncompressed length
+    # 4. Base64 URL-safe encode
+
+    json_str = json.dumps(config)
     json_bytes = json_str.encode('utf-8')
     uncompressed_len = len(json_bytes)
 
-    # Compress
     compressed = zlib.compress(json_bytes)
-    
-    # Header format:
-    # Magic Bytes: 07 c0 01 00
-    # Total Remaining Length (4 bytes) = 4 bytes (UncompressedLen field) + len(compressed)
-    # Uncompressed Length (4 bytes)
-    magic = b'\x07\xc0\x01\x00'
-    total_remaining_len = 4 + len(compressed)
-    
-    header = magic + struct.pack('>I', total_remaining_len) + struct.pack('>I', uncompressed_len)
+
+    # Qt qCompress format: 4 bytes uncompressed length (big-endian) + compressed data
+    header = struct.pack('>I', uncompressed_len)
     data_with_header = header + compressed
 
     # URL-safe base64 (no padding)
