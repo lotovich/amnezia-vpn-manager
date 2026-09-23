@@ -197,7 +197,7 @@ if missing:
 sniff = {"enabled": True, "destOverride": ["http", "tls", "quic"]}
 rules = [
     # Client DNS (any resolver) -> Xray built-in DoH resolver, over the tunnel
-    {"type": "field", "inboundTag": ["tproxy-in", "socks-test"], "port": 53, "outboundTag": "dns-out"},
+    {"type": "field", "inboundTag": ["tproxy-in", "tproxy-udp", "socks-test"], "port": 53, "outboundTag": "dns-out"},
     {"type": "field", "ip": ["geoip:private"], "outboundTag": "block"},
 ]
 if block_quic:
@@ -212,11 +212,22 @@ cfg = {
     "dns": {"servers": ["https://1.1.1.1/dns-query"], "queryStrategy": "UseIPv4"},
     "inbounds": [
         {
+            # TCP: iptables REDIRECT (nat), original destination via SO_ORIGINAL_DST
             "tag": "tproxy-in",
             "listen": "0.0.0.0",
             "port": tproxy_port,
             "protocol": "dokodemo-door",
-            "settings": {"network": "tcp,udp", "followRedirect": True},
+            "settings": {"network": "tcp", "followRedirect": True},
+            "sniffing": sniff,
+            "streamSettings": {"sockopt": {"tproxy": "redirect"}},
+        },
+        {
+            # UDP: iptables TPROXY (mangle), transparent socket
+            "tag": "tproxy-udp",
+            "listen": "0.0.0.0",
+            "port": tproxy_port + 1,
+            "protocol": "dokodemo-door",
+            "settings": {"network": "udp", "followRedirect": True},
             "sniffing": sniff,
             "streamSettings": {"sockopt": {"tproxy": "tproxy"}},
         },
@@ -272,13 +283,27 @@ setup_tproxy() {
                192.0.0.0/24 192.168.0.0/16 224.0.0.0/4 240.0.0.0/4 255.255.255.255/32; do
         iptables -t mangle -A XRAY -d "$net" -j RETURN
     done
-    iptables -t mangle -A XRAY -p tcp -j TPROXY --on-port "$XRAY_TPROXY_PORT" --tproxy-mark 1
-    iptables -t mangle -A XRAY -p udp -j TPROXY --on-port "$XRAY_TPROXY_PORT" --tproxy-mark 1
+    # UDP -> TPROXY (transparent socket on port+1)
+    iptables -t mangle -A XRAY -p udp -j TPROXY --on-port "$((XRAY_TPROXY_PORT + 1))" --tproxy-mark 1
     iptables -t mangle -C PREROUTING -i "$INTERFACE" -j XRAY 2>/dev/null || \
         iptables -t mangle -A PREROUTING -i "$INTERFACE" -j XRAY
+
+    # TCP -> REDIRECT (nat); Xray recovers the original destination via SO_ORIGINAL_DST.
+    # (Xray's TCP listener is not IP_TRANSPARENT in the pinned release, so TPROXY drops TCP.)
+    iptables -t nat -N XRAY_TCP 2>/dev/null || iptables -t nat -F XRAY_TCP
+    for net in 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 \
+               192.0.0.0/24 192.168.0.0/16 224.0.0.0/4 240.0.0.0/4 255.255.255.255/32; do
+        iptables -t nat -A XRAY_TCP -d "$net" -j RETURN
+    done
+    iptables -t nat -A XRAY_TCP -p tcp -j REDIRECT --to-ports "$XRAY_TPROXY_PORT"
+    iptables -t nat -C PREROUTING -i "$INTERFACE" -j XRAY_TCP 2>/dev/null || \
+        iptables -t nat -I PREROUTING 1 -i "$INTERFACE" -j XRAY_TCP
 }
 
 teardown_tproxy() {
+    iptables -t nat -D PREROUTING -i "$INTERFACE" -j XRAY_TCP 2>/dev/null || true
+    iptables -t nat -F XRAY_TCP 2>/dev/null || true
+    iptables -t nat -X XRAY_TCP 2>/dev/null || true
     iptables -t mangle -D PREROUTING -i "$INTERFACE" -j XRAY 2>/dev/null || true
     iptables -t mangle -F XRAY 2>/dev/null || true
     iptables -t mangle -X XRAY 2>/dev/null || true
@@ -306,7 +331,7 @@ start_cascade() {
     XRAY_PID=$!
     sleep 1
     if pgrep -x xray >/dev/null; then
-        log_info "Xray started (supervisor pid $XRAY_PID), TPROXY on port $XRAY_TPROXY_PORT, SOCKS on 127.0.0.1:$XRAY_SOCKS_TEST_PORT"
+        log_info "Xray started (supervisor pid $XRAY_PID), TCP redirect on $XRAY_TPROXY_PORT, UDP tproxy on $((XRAY_TPROXY_PORT + 1)), SOCKS on 127.0.0.1:$XRAY_SOCKS_TEST_PORT"
     else
         log_error "Xray failed to start"; kill "$XRAY_PID" 2>/dev/null; teardown_tproxy; return 1
     fi
