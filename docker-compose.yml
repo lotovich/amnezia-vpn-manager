@@ -13,10 +13,13 @@ services:
     devices:
       - /dev/net/tun:/dev/net/tun
 
-    # Allow sysctls for IP forwarding
+    # Allow sysctls for IP forwarding.
+    # src_valid_mark must stay 0: with 1 the reverse-path check uses the
+    # TPROXY fwmark, hits the "local default" table and drops every client
+    # packet as a martian source (cascade mode).
     sysctls:
       - net.ipv4.ip_forward=1
-      - net.ipv4.conf.all.src_valid_mark=1
+      - net.ipv4.conf.all.src_valid_mark=0
 
     ports:
       # VPN port - UDP

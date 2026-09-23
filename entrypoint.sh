@@ -259,6 +259,11 @@ PY
 # Xray's own outbound traffic leaves via eth0 and never re-enters awg0, so no
 # mark-based loop guard is needed (see Xray docs, level-2/tproxy).
 setup_tproxy() {
+    # Reverse-path check must not use the TPROXY mark, otherwise the lookup
+    # lands in table 100 (local default) and packets are dropped as martians.
+    for f in /proc/sys/net/ipv4/conf/all/src_valid_mark /proc/sys/net/ipv4/conf/$INTERFACE/src_valid_mark; do
+        [ -w "$f" ] && echo 0 > "$f" || log_warn "cannot write $f (set net.ipv4.conf.all.src_valid_mark=0 via compose sysctls)"
+    done
     ip rule add fwmark 1 table 100 2>/dev/null || true
     ip route add local default dev lo table 100 2>/dev/null || true
 
