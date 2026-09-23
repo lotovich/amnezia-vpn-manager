@@ -161,9 +161,155 @@ stop_vpn() {
     killall amneziawg-go 2>/dev/null || true
 }
 
+
+# ---------------------------------------------------------------------------
+# Cascade mode: this server is the entry node; non-Russian traffic from awg0 is
+# transparently proxied (TPROXY) into Xray and sent to the exit server over
+# VLESS + XHTTP + TLS. Everything else keeps working as in single-server mode.
+# ---------------------------------------------------------------------------
+CASCADE_ENABLED=${CASCADE_ENABLED:-0}
+XRAY_CONFIG="/etc/xray/config.json"
+XRAY_TPROXY_PORT=12345
+XRAY_SOCKS_TEST_PORT=1081
+
+write_xray_config() {
+    mkdir -p /etc/xray
+    python3 - "$XRAY_CONFIG" <<'PY'
+import json, os, sys
+
+def env(name, default=""):
+    return os.environ.get(name, default).strip()
+
+exit_host = env("EXIT_HOST")
+exit_port = int(env("EXIT_PORT", "443"))
+exit_sni  = env("EXIT_SNI") or exit_host
+exit_uuid = env("EXIT_UUID")
+exit_path = env("EXIT_PATH", "/")
+ru_direct  = env("CASCADE_RU_DIRECT", "1") == "1"
+block_quic = env("CASCADE_BLOCK_QUIC", "1") == "1"
+tproxy_port = int(env("XRAY_TPROXY_PORT", "12345"))
+socks_port  = int(env("XRAY_SOCKS_TEST_PORT", "1081"))
+
+missing = [k for k, v in (("EXIT_HOST", exit_host), ("EXIT_UUID", exit_uuid)) if not v]
+if missing:
+    sys.exit("cascade: missing " + ", ".join(missing))
+
+sniff = {"enabled": True, "destOverride": ["http", "tls", "quic"]}
+rules = [
+    # Client DNS (any resolver) -> Xray built-in DoH resolver, over the tunnel
+    {"type": "field", "inboundTag": ["tproxy-in", "socks-test"], "port": 53, "outboundTag": "dns-out"},
+    {"type": "field", "ip": ["geoip:private"], "outboundTag": "block"},
+]
+if block_quic:
+    rules.append({"type": "field", "network": "udp", "port": 443, "outboundTag": "block"})
+if ru_direct:
+    rules.append({"type": "field", "domain": ["geosite:category-ru"], "outboundTag": "direct"})
+    rules.append({"type": "field", "ip": ["geoip:ru"], "outboundTag": "direct"})
+rules.append({"type": "field", "network": "tcp,udp", "outboundTag": "proxy"})
+
+cfg = {
+    "log": {"loglevel": "warning"},
+    "dns": {"servers": ["https://1.1.1.1/dns-query"], "queryStrategy": "UseIPv4"},
+    "inbounds": [
+        {
+            "tag": "tproxy-in",
+            "listen": "0.0.0.0",
+            "port": tproxy_port,
+            "protocol": "tunnel",
+            "settings": {"allowedNetwork": "tcp,udp", "followRedirect": True},
+            "sniffing": sniff,
+            "streamSettings": {"sockopt": {"tproxy": "tproxy"}},
+        },
+        {
+            "tag": "socks-test",
+            "listen": "127.0.0.1",
+            "port": socks_port,
+            "protocol": "socks",
+            "settings": {"udp": True},
+            "sniffing": sniff,
+        },
+    ],
+    "outbounds": [
+        {
+            "tag": "proxy",
+            "protocol": "vless",
+            "settings": {"vnext": [{"address": exit_host, "port": exit_port,
+                                    "users": [{"id": exit_uuid, "encryption": "none"}]}]},
+            "streamSettings": {
+                "network": "xhttp",
+                "security": "tls",
+                "tlsSettings": {"serverName": exit_sni, "alpn": ["h2", "http/1.1"]},
+                "xhttpSettings": {"host": exit_sni, "path": exit_path, "mode": "packet-up"},
+            },
+        },
+        {"tag": "direct", "protocol": "freedom",
+         "streamSettings": {"sockopt": {"domainStrategy": "UseIPv4"}}},
+        {"tag": "block", "protocol": "blackhole"},
+        {"tag": "dns-out", "protocol": "dns"},
+    ],
+    "routing": {"domainStrategy": "IPIfNonMatch", "rules": rules},
+}
+with open(sys.argv[1], "w") as f:
+    json.dump(cfg, f, indent=2)
+PY
+    chmod 600 "$XRAY_CONFIG"
+}
+
+# TPROXY rules: only packets arriving from awg0, destined outside private ranges.
+# Xray's own outbound traffic leaves via eth0 and never re-enters awg0, so no
+# mark-based loop guard is needed (see Xray docs, level-2/tproxy).
+setup_tproxy() {
+    ip rule add fwmark 1 table 100 2>/dev/null || true
+    ip route add local default dev lo table 100 2>/dev/null || true
+
+    iptables -t mangle -N XRAY 2>/dev/null || iptables -t mangle -F XRAY
+    for net in 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 \
+               192.0.0.0/24 192.168.0.0/16 224.0.0.0/4 240.0.0.0/4 255.255.255.255/32; do
+        iptables -t mangle -A XRAY -d "$net" -j RETURN
+    done
+    iptables -t mangle -A XRAY -p tcp -j TPROXY --on-port "$XRAY_TPROXY_PORT" --tproxy-mark 1
+    iptables -t mangle -A XRAY -p udp -j TPROXY --on-port "$XRAY_TPROXY_PORT" --tproxy-mark 1
+    iptables -t mangle -C PREROUTING -i "$INTERFACE" -j XRAY 2>/dev/null || \
+        iptables -t mangle -A PREROUTING -i "$INTERFACE" -j XRAY
+}
+
+teardown_tproxy() {
+    iptables -t mangle -D PREROUTING -i "$INTERFACE" -j XRAY 2>/dev/null || true
+    iptables -t mangle -F XRAY 2>/dev/null || true
+    iptables -t mangle -X XRAY 2>/dev/null || true
+    ip rule del fwmark 1 table 100 2>/dev/null || true
+    ip route del local default dev lo table 100 2>/dev/null || true
+}
+
+start_cascade() {
+    log_info "Cascade mode: exit ${EXIT_HOST}:${EXIT_PORT:-443} (RU direct=${CASCADE_RU_DIRECT:-1}, block QUIC=${CASCADE_BLOCK_QUIC:-1})"
+    write_xray_config || { log_error "Cascade config failed"; return 1; }
+    if ! xray run -test -config "$XRAY_CONFIG" >/dev/null 2>&1; then
+        log_error "Xray config is invalid:"; xray run -test -config "$XRAY_CONFIG" 2>&1 | tail -3
+        return 1
+    fi
+    setup_tproxy
+    xray run -config "$XRAY_CONFIG" &
+    XRAY_PID=$!
+    sleep 1
+    if kill -0 "$XRAY_PID" 2>/dev/null; then
+        log_info "Xray started (pid $XRAY_PID), TPROXY on port $XRAY_TPROXY_PORT, SOCKS test on 127.0.0.1:$XRAY_SOCKS_TEST_PORT"
+    else
+        log_error "Xray failed to start"; teardown_tproxy; return 1
+    fi
+}
+
+stop_cascade() {
+    [ "$CASCADE_ENABLED" = "1" ] || return 0
+    log_warn "Stopping cascade..."
+    teardown_tproxy
+    [ -n "$XRAY_PID" ] && kill "$XRAY_PID" 2>/dev/null || true
+}
+
 # Cleanup on exit
 cleanup() {
     log_warn "Received shutdown signal..."
+    stop_cascade
     stop_vpn
     exit 0
 }
@@ -172,6 +318,11 @@ trap cleanup SIGTERM SIGINT
 
 # Start VPN
 start_vpn
+
+# Start cascade (optional)
+if [ "$CASCADE_ENABLED" = "1" ]; then
+    start_cascade || log_error "Cascade disabled due to errors; traffic will exit directly from this server"
+fi
 
 # Start Python bot
 log_info "Starting Telegram bot..."
