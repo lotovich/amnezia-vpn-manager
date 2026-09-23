@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher
 from aiogram.enums import ParseMode
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 
 from database import Database
 from vpn_manager import VPNManager
@@ -45,6 +46,13 @@ STATS_INTERVAL = int(os.getenv("STATS_INTERVAL", "60"))  # seconds
 
 # Server monitoring configuration
 SERVER_STATS_INTERVAL = int(os.getenv("SERVER_STATS_INTERVAL", "300"))  # 5 min default
+
+# Telegram API proxy. In cascade mode the entry server sits in Russia where
+# api.telegram.org is throttled/blocked, so the bot talks to Telegram through
+# the local Xray SOCKS inbound (which routes it via the exit server).
+BOT_PROXY = os.getenv("BOT_PROXY") or (
+    "socks5://127.0.0.1:1081" if os.getenv("CASCADE_ENABLED", "0") == "1" else ""
+)
 CPU_ALERT_THRESHOLD = float(os.getenv("CPU_ALERT_THRESHOLD", "80"))
 MEM_ALERT_THRESHOLD = float(os.getenv("MEM_ALERT_THRESHOLD", "90"))
 DISK_ALERT_THRESHOLD = float(os.getenv("DISK_ALERT_THRESHOLD", "90"))
@@ -229,8 +237,13 @@ async def main() -> None:
     logger.info(f"Server monitor initialized (thresholds: CPU>{CPU_ALERT_THRESHOLD}%, MEM>{MEM_ALERT_THRESHOLD}%)")
 
     # Initialize bot
+    session = None
+    if BOT_PROXY:
+        logger.info(f"Telegram API via proxy: {BOT_PROXY}")
+        session = AiohttpSession(proxy=BOT_PROXY)
     bot = Bot(
         token=BOT_TOKEN,
+        session=session,
         default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN)
     )
     dp = Dispatcher()

@@ -16,3 +16,6 @@ python-dotenv==1.0.1
 
 # Server monitoring
 psutil==5.9.8
+
+# SOCKS proxy support for aiogram (Telegram API via Xray in cascade mode)
+aiohttp-socks==0.8.4

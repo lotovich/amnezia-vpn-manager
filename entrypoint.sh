@@ -289,13 +289,21 @@ start_cascade() {
         return 1
     fi
     setup_tproxy
-    xray run -config "$XRAY_CONFIG" &
+    # Supervised: if Xray dies, TPROXY would redirect into a dead port and every
+    # non-RU connection would hang, so restart it until the container stops.
+    (
+        while true; do
+            xray run -config "$XRAY_CONFIG"
+            echo "[WARN] Xray exited (code $?), restarting in 2s" >&2
+            sleep 2
+        done
+    ) &
     XRAY_PID=$!
     sleep 1
-    if kill -0 "$XRAY_PID" 2>/dev/null; then
-        log_info "Xray started (pid $XRAY_PID), TPROXY on port $XRAY_TPROXY_PORT, SOCKS test on 127.0.0.1:$XRAY_SOCKS_TEST_PORT"
+    if pgrep -x xray >/dev/null; then
+        log_info "Xray started (supervisor pid $XRAY_PID), TPROXY on port $XRAY_TPROXY_PORT, SOCKS on 127.0.0.1:$XRAY_SOCKS_TEST_PORT"
     else
-        log_error "Xray failed to start"; teardown_tproxy; return 1
+        log_error "Xray failed to start"; kill "$XRAY_PID" 2>/dev/null; teardown_tproxy; return 1
     fi
 }
 
@@ -304,6 +312,7 @@ stop_cascade() {
     log_warn "Stopping cascade..."
     teardown_tproxy
     [ -n "$XRAY_PID" ] && kill "$XRAY_PID" 2>/dev/null || true
+    pkill -x xray 2>/dev/null || true
 }
 
 # Cleanup on exit
